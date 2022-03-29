@@ -10,7 +10,7 @@ object Finalization {
     ms.sortBy(x => (x.height, x.id)).map(_.id).mkString(" ")
 
   // Sender represents validator node
-  final case class Sender(id: Int, stake: Int) {
+  final case class Sender(id: Int) {
     override def hashCode(): Int = this.id.hashCode()
   }
 
@@ -229,10 +229,10 @@ object Finalization {
     }
   }
 
-  def initNetwork(sendersCount: Int, stake: Int) = {
+  def initNetwork(sendersCount: Int) = {
     // Arbitrary number of senders (bonded validators)
     val senders = (0 until sendersCount).map { n =>
-      Sender(n, stake)
+      Sender(n)
     }.toSet
 
     // Genesis message created by first sender
