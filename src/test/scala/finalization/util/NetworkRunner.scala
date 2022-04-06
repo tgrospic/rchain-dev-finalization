@@ -1,84 +1,59 @@
 package finalization.util
 
 import cats.effect.Sync
-import cats.effect.concurrent.Ref
 import cats.syntax.all._
-import finalization.Finalization._
-import graphz.GraphGenerator._
-import graphz._
+import finalization.NetworkManager
+import finalization.SimpleAlgorithm1.SimpleAlgorithm._
 
 import scala.util.Random
 
-object NetworkRunner {}
+object NetworkRunner {
 
-class NetworkRunner[F[_]: Sync](enableOutput: Boolean) {
+  /**
+    * Instances for all supported network runners
+    */
+  implicit def runners[F[_]: Sync]: Seq[NetworkRunner[F]] = {
+    val simpleAlg: NetworkManager[F] = SimpleNetworkManager[F]()
 
-  def printDag(network: Network, name: String) = {
-    // DAG toposort
-    val msgs = network.senders.head.heightMap
-    val topo = msgs.map { case (_, v) => v.toVector }.toVector
-
-    for {
-      ref <- Ref[F].of(Vector[String]())
-      _   <- {
-        implicit val ser: GraphSerializer[F] = new ListSerializerRef[F](ref)
-        dagAsCluster[F](topo, "")
-      }
-      res <- ref.get
-      _    = {
-        val graphString = res.mkString
-
-        val filePrefix = s"vdags/$name"
-
-        // Save graph file
-        //          Files.writeString(Path.of(s"$filePrefix.dot"), graphString)
-
-        // Generate dot image
-        import java.io.ByteArrayInputStream
-        import scala.sys.process._
-
-        val imgType  = "jpg"
-        val fileName = s"$filePrefix.$imgType"
-        println(s"Generating dot image: $fileName")
-
-        val dotCmd = Seq("dot", s"-T$imgType", "-o", fileName)
-        dotCmd #< new ByteArrayInputStream(graphString.getBytes) lineStream
-      }
-    } yield ()
+    Seq(NetworkRunner[F](simpleAlg))
   }
+}
 
-  def runSections(
-      start: Network,
-      roundSkip: List[(Int, Float)],
-      prefix: String
-  ) = {
-    val senderCount = start.senders.size
-    roundSkip.foldM(start, 0) { case ((net, n), (height, skipP)) =>
-      runNetwork(net, height, skipP).flatMap { res =>
-        //            val name = s"$prefix-$n-$senderCount-$skipP"
-        val name = s"$prefix-$n-$senderCount"
+case class NetworkRunner[F[_]: Sync](netMngr: NetworkManager[F]) {
+  // Network and Sender State types from Network Manager
+  type Net         = netMngr.TyNet
+  type SenderState = netMngr.TySenderState
 
-        printDag(res, name).whenA(enableOutput).as((res, n + 1))
-      }
-    }
+  // Inline extensions for Network and Sender State
+  // TODO: find a way to extract it to separate file
+  class NetworkDataOps(net: Net) {
+    def senders: Set[SenderState]         = netMngr.getSenders(net)
+    def split(perc: Float): (Net, Net)    = netMngr.split(net, perc)
+    def split(groups: Seq[Int]): Seq[Net] = netMngr.split(net, groups)
+    def >|<(net2: Net): Net               = netMngr.merge(net, net2)
   }
+  implicit def finalizationSyntaxNetworkData(net: Net): NetworkDataOps = new NetworkDataOps(net)
+
+  /* Implementation */
+
+  def printDag(network: Net, name: String): F[Unit] = netMngr.printDag(network, name)
 
   // Helper to initialize network
-  def genNet(senders: Int) =
-    initNetwork(sendersCount = senders) -> s"net$senders"
+  def genNetwork(senders: Int): Net = netMngr.create(sendersCount = senders)
 
-  /* Regression runner (run previously failed tests) */
+  /* Section runner (rounds with skipping some senders) */
 
-  // Regression test was derived from infinite test via scala code printing
-  def runRegression(f: (NetworkRunner[F], Network, String) => F[(Network, Int)]) = {
-    val (net, name) = genNet(10)
-    f(this, net, name)
-  }
+  def runSections(start: Net, roundSkip: List[(Int, Float)]): F[Net] =
+    roundSkip
+      .foldM(start, 0) { case ((net, n), (height, skipP)) =>
+        netMngr.run(net, height, skipP).map((_, n + 1))
+      }
+      .map(_._1)
 
   /* Infinite runner */
 
   def runInfinite(generateCode: Boolean): F[Unit] = {
-    val nets           = List(10).map(genNet)
+    val nets           = List(10).map(genNetwork).map((_, "net"))
     val startIteration = 1
     (nets, startIteration).iterateForeverM { case (networks, iteration) =>
       if (!generateCode) {
@@ -98,34 +73,32 @@ class NetworkRunner[F[_]: Sync](enableOutput: Boolean) {
   }
 
   private def splitMerge(
-      nets: List[(Network, String)],
+      nets: List[(Net, String)],
       generateCode: Boolean
-  ): F[List[(Network, String)]] = {
+  ): F[List[(Net, String)]] = {
     def removeByIndexFrom[T](v: List[T], i: Int): List[T] = v.patch(i, List.empty, 1)
     def uniqueNameFor[T](t: T): String                    =
       "n" + (t, Random.nextInt).hashCode.toString.replace("-", "_")
 
     // Runs simulation for network with random number of rounds and skip percent
-    def runRounds(namedNet: (Network, String)): F[(Network, String)] = {
+    def runRounds(namedNet: (Net, String)): F[(Net, String)] = {
       val rounds = Random.nextInt(15) + 1 // from 1 to 15 inclusive
       val skip   = Random.nextFloat
       for {
-        r <- runSections(namedNet._1, List((rounds, skip)), namedNet._2)
+        newNet <- runSections(namedNet._1, List((rounds, skip)))
       } yield {
-        val newNet     = r._1
         val newNetName = uniqueNameFor(newNet)
         if (generateCode) {
           println(
-            s"""${newNetName}_ <- runSections(${namedNet._2}, List(($rounds, ${skip}f)), "${namedNet._2}")""".stripMargin
+            s"""$newNetName <- runSections($namedNet, List(($rounds, ${skip}f)))""".stripMargin
           )
-          println(s"($newNetName, _) = ${newNetName}_")
         }
         (newNet, newNetName)
       }
     }
 
     // Splits random network and runs random number of rounds for both parts
-    def splitAndRun(nets: List[(Network, String)]): F[List[(Network, String)]] =
+    def splitAndRun(nets: List[(Net, String)]): F[List[(Net, String)]] =
       for {
         index        <- Sync[F].delay(Random.nextInt(nets.size))
         splitPercent  = Random.nextFloat
@@ -150,7 +123,7 @@ class NetworkRunner[F[_]: Sync](enableOutput: Boolean) {
       } yield r
 
     // Merges two random networks into one
-    def merge(nets: List[(Network, String)]): F[List[(Network, String)]] = Sync[F].delay {
+    def merge(nets: List[(Net, String)]): F[List[(Net, String)]] = Sync[F].delay {
       if (nets.length >= 2) {
         // Take 2 random indices, remove corresponding items and add merging of them
         val indexes             = Random.shuffle(nets.indices.toList).take(2)
