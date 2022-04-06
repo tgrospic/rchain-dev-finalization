@@ -9,15 +9,15 @@ on:
   workflow_dispatch:
     
 jobs:
-  build_base:
+  build:
     name: Run sbt tests
     runs-on: ubuntu-latest
-    container: mozilla/sbt
+#    container: mozilla/sbt
     steps:
     - name: Clone Repository
       uses: actions/checkout@v3
 
-    - name: Run tests
-      shell: bash
-      run: |
-        sbt test
+#    - name: Run tests
+#      shell: bash
+#      run: |
+#        sbt test
