@@ -3,12 +3,12 @@ package graphz
 import cats.effect.Sync
 import cats.syntax.all._
 import cats.{Applicative, Foldable, Monad}
-import finalization.Finalization.Msg
 
 object GraphGenerator {
   final case class ValidatorBlock(
-      blockHash: String,
-      parentsHashes: List[String],
+      id: String,
+      sender: String,
+      height: Long,
       justifications: List[String]
   )
 
@@ -24,7 +24,7 @@ object GraphGenerator {
   }
 
   def dagAsCluster[F[_]: Sync: GraphSerializer](
-      topoSort: Vector[Vector[Msg]], // Block hash
+      topoSort: Vector[Vector[ValidatorBlock]], // Block hash
       lastFinalizedBlockHash: String
   ): F[Graphz[F]] =
     for {
@@ -37,7 +37,7 @@ object GraphGenerator {
       g                     <- initGraph[F]("dag")
       allAncestors           = validatorsList
                                  .flatMap { case (_, blocks) =>
-                                   blocks.get(firstTs).map(_.flatMap(b => b.parentsHashes)).getOrElse(List.empty[String])
+                                   blocks.get(firstTs).map(_.flatMap(b => b.justifications)).getOrElse(List.empty[String])
                                  }
                                  .distinct
                                  .sorted
@@ -75,18 +75,13 @@ object GraphGenerator {
 
   private def accumulateDagInfo[F[_]: Sync](
       acc: DagInfo,
-      blocks: Vector[Msg] // Block hash
+      blocks: Vector[ValidatorBlock] // Block hash
   ): F[DagInfo] = {
     val timeEntry  = blocks.head.height.toLong
     val validators = blocks.map { b =>
-      val blockHash       = b.id
-      val blockSenderHash = b.sender.id.toString
-      // TODO: Parent and justifications are the same
-      val parents         = b.justifications.values.toList
-      val justifications  = b.justifications.values.toList
       val validatorBlocks =
-        Map(timeEntry -> List(ValidatorBlock(blockHash, parents, justifications)))
-      Map(blockSenderHash -> validatorBlocks)
+        Map(timeEntry -> List(b))
+      Map(b.sender -> validatorBlocks)
     }
     acc
       .copy(
@@ -147,8 +142,8 @@ object GraphGenerator {
   ): G[Unit] =
     validators
       .flatMap(_.values.toList.flatten)
-      .traverse { case ValidatorBlock(blockHash, parentsHashes, _) =>
-        parentsHashes.traverse(p => g.edge(blockHash, p, constraint = Some(false)))
+      .traverse { case ValidatorBlock(id, _, _, justifications) =>
+        justifications.traverse(p => g.edge(id, p, constraint = Some(false)))
       }
       .as(())
 
@@ -158,11 +153,11 @@ object GraphGenerator {
   ): G[Unit] =
     validators.values.toList
       .flatMap(_.values.toList.flatten)
-      .traverse { case ValidatorBlock(blockHash, _, justifications) =>
+      .traverse { case ValidatorBlock(id, _, _, justifications) =>
         justifications
           .traverse { j =>
             g.edge(
-              blockHash,
+              id,
               j,
               style = Some(Dotted),
               constraint = Some(false),
@@ -180,8 +175,8 @@ object GraphGenerator {
   ): Map[String, Option[GraphStyle]] =
     blocks.get(ts) match {
       case Some(tsBlocks) =>
-        tsBlocks.map { case ValidatorBlock(blockHash, _, _) =>
-          (blockHash -> styleFor(blockHash, lastFinalizedBlockHash))
+        tsBlocks.map { case ValidatorBlock(id, _, _, justifications) =>
+          (id -> styleFor(id, lastFinalizedBlockHash))
         }.toMap
       case None           => Map(s"${ts.show}_$validatorId" -> Some(Invis))
     }
