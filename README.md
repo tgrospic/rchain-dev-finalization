@@ -1,5 +1,7 @@
 # RChain dev finalization
 
+[![CI  finalization simulator](https://github.com/tgrospic/rchain-dev-finalization/actions/workflows/ci.yml/badge.svg)](https://github.com/tgrospic/rchain-dev-finalization/actions/workflows/ci.yml)
+
 ## Usage
 
 ### sbt console
