@@ -168,7 +168,7 @@ object SimpleAlgorithm {
 
         // Add message view to a view map
         val newMsgViewMap = msgViewMap + ((msg, newMsgView))
-        
+
         // Create new sender state with added message
         val newState = copy(
           latestMsgs = newLatestMsgs,
@@ -178,7 +178,7 @@ object SimpleAlgorithm {
         )
 
         /* Debug log */
-        
+
         val parentsMinMsgsStr = parentsWithMinMessages
           .filter(_._2.nonEmpty)
           .toList
