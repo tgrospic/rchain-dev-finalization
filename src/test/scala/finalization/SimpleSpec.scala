@@ -131,9 +131,13 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
       s2_2_end <- runSections(s2_2, List((1, .0f)))
 
       // Split 3 on 1-2
-      Vector(s3_1_net, _) = s2_2_end.split(Seq(1))
+      Vector(s3_1_net, s3_2_net) = s2_2_end.split(Seq(1))
 
-      netRes <- runSections(s3_1_net, List((1, .0f)))
+      s3_1_net_end <- runSections(s3_1_net, List((1, .0f)))
+
+      net4 = s2_1 >|< s3_1_net_end >|< s3_2_net
+
+      netRes <- runSections(net4, List((2, .0f)))
 
       _ <- printDag(netRes, "partitions-merge")
     } yield ()
