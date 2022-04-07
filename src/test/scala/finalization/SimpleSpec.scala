@@ -18,9 +18,9 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
     }
   }
 
-  it should "run network with two isolated partitions" in {
+  it should "run network with two isolated partitions join" in {
     runAll { runner: NetworkRunner[Task] =>
-      runTwoIsolatedPartitions[Task](runner)
+      runTwoIsolatedPartitionsJoin[Task](runner)
     }
   }
 
@@ -30,7 +30,7 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
     }
   }
 
-  it should "run network with two partitions merge" in {
+  it should "run network with two non equal partitions merge" in {
     runAll { runner: NetworkRunner[Task] =>
       runTwoPartitionsMerge[Task](runner)
     }
@@ -53,7 +53,7 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
     } yield ()
   }
 
-  def runTwoIsolatedPartitions[F[_]: Sync](runner: NetworkRunner[F]) = {
+  def runTwoIsolatedPartitionsJoin[F[_]: Sync](runner: NetworkRunner[F]) = {
     import runner._
 
     implicit val nm = runner.netMngr
@@ -94,6 +94,9 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
       d_s1_1 <- runSections(s1_1_net, List((2, .0f)))
       d_s1_2 <- runSections(s1_2_net, List((2, .0f)))
 
+      _ <- printDag(d_s1_1, "isolated-equal-merge/dag-1")
+      _ <- printDag(d_s1_2, "isolated-equal-merge/dag-2")
+
       net2                  = d_s1_1 >|< d_s1_2
       Vector(s2_1, s2_rest) = net2.split(Seq(1))
 
@@ -102,7 +105,7 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
 
       net3 = s2_1_end >|< s2_rest
 
-      _ <- printDag(net3, "equal-partitions-merge")
+      _ <- printDag(net3, "isolated-equal-merge/dag-3")
     } yield ()
   }
 
