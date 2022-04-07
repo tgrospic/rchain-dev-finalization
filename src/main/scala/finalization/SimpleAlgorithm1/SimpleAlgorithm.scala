@@ -19,6 +19,15 @@ object SimpleAlgorithm {
   def showMsgsSortSender(ms: Set[Msg]) =
     ms.toSeq.sortBy(x => (x.sender.id, x.height, x.id)).map(_.id).mkString(" ")
 
+  def unfold[A, S](init: S)(f: S => Iterator[S]) =
+    LazyList.unfold(f(init)) { iter =>
+      if (!iter.hasNext) none
+      else {
+        val x = iter.next()
+        Some((x, iter ++ f(x)))
+      }
+    }
+
   // Sender represents validator node
   final case class Sender(id: Int) {
     override def hashCode(): Int = this.id.hashCode()
@@ -111,38 +120,37 @@ object SimpleAlgorithm {
         val finalizedViews = finalized.map(msgViewMap)
 
         // Iterate self parent messages
-        def selfParents(mv: MsgView) = {
-          def selfPrev(m: MsgView) =
-            (m.parents.filter(_.root.sender == mv.root.sender) -- finalizedViews).toList
-          LazyList
-            .unfold(selfPrev(mv)) {
-              case Nil       => none
-              case x +: rest => Some((x, rest ++ selfPrev(x)))
-            }
-        }
+        def selfParents(mv: MsgView) =
+          unfold(mv) { m =>
+            (m.parents.filter(_.root.sender == mv.root.sender) -- finalizedViews).toIterator
+          }
 
-        // Minimum messages for each parent
-        val parentsWithMinMessages = msgParents.map { m =>
-          val parents = m.parents -- finalizedViews
-          val minMsgs = parents.map { mp =>
-            (mp.root.sender, selfParents(mp).lastOption.getOrElse(mp))
-          }.toMap
-          (m, minMsgs)
-        }.toMap
+        // Minimum messages for each sender (next layer)
+        val minMessages    = msgParents.flatMap(selfParents(_).lastOption)
+        val minMessagesMap = minMessages.map(x => (x.root.sender, x)).toMap
+        val nextLayer      = minMessages
+          .flatMap(_.parents)
+          .filter(x => minMessagesMap.keySet.contains(x.root.sender))
+          .foldLeft(minMessagesMap) { case (acc, m) =>
+            val currMin = acc(m.root.sender)
+            val newMin  =
+              if (m.root.senderSeq > currMin.root.senderSeq) m
+              else currMin
+            acc + ((m.root.sender, newMin))
+          }
 
         // Find potential partition participants
         // - witness see message which see witness' previous message
-        val witnessesByParents = parentsWithMinMessages
-          .map { case (mv, sMinMsgs) =>
-            val seenBy = sMinMsgs
-              .map { case (s, minMsg) =>
-                val seeMinMsg = selfParents(mv).exists(_.seen.contains(minMsg.root))
-                (s, seeMinMsg)
-              }
-              .filter(_._2)
-              .keySet
-            (mv.root.sender, seenBy)
-          }
+        val witnessesByParents = msgParents.map { mv =>
+          val seenBy = nextLayer
+            .map { case (s, minMsg) =>
+              val seeMinMsg = selfParents(mv).exists(_.seen.contains(minMsg.root))
+              (s, seeMinMsg)
+            }
+            .filter(_._2)
+            .keySet
+          (mv.root.sender, seenBy)
+        }.toMap
 
         // Detect new full fringe
         // TODO: detect 2/3 of stake supporting partition
@@ -158,7 +166,7 @@ object SimpleAlgorithm {
         val newFullFringe =
           if (hasNewFringe) {
             // Min messages are new fringe
-            msgParents.flatMap(m => selfParents(m).lastOption).map(_.root)
+            nextLayer.mapValues(_.root).values.toSet
           } else {
             parentFullFringe
           }
@@ -179,21 +187,6 @@ object SimpleAlgorithm {
 
         /* Debug log */
 
-        val parentsMinMsgsStr = parentsWithMinMessages
-          .filter(_._2.nonEmpty)
-          .toList
-          .sortBy(_._1.root.sender.id)
-          .map { case (mp, cm) =>
-            val cmStr = cm.toSeq
-              .sortBy(_._1.id)
-              .map { case (s, m) =>
-                s"${s.id}(${m.root.id})"
-              }
-              .mkString(" ")
-            s"  ${mp.root.id}: $cmStr"
-          }
-          .mkString("\n")
-
         val witnessesStr = witnessesByParents.toList
           .sortBy(_._1.id)
           .map { case (s, ss) =>
@@ -202,13 +195,15 @@ object SimpleAlgorithm {
           }
           .mkString("\n")
 
+        val nextLayerStr = showMsgsSortSender(nextLayer.mapValues(_.root).values.toSet)
+
         val newFullFringeStr = showMsgsSortSender(newFullFringe)
 
         if (me == msg.sender) {
           println(s"${me.id}: ${msg.id}")
-          println(s"MIN_MSGS:\n$parentsMinMsgsStr")
-          // println(s"WITNESS:\n$witnessesStr")
-          println(s"FRINGE:\n  $newFullFringeStr")
+//           println(s"WITNESS:\n$witnessesStr")
+          println(s"NEXT  : $nextLayerStr")
+          println(s"FRINGE: $newFullFringeStr")
           println(s"---------------------------------")
         }
 
