@@ -75,9 +75,139 @@ object SimpleAlgorithm {
   ) {
     override def hashCode(): Int = this.me.id.hashCode()
 
+    // Iterate self parent messages
+    def selfParents(mv: MsgView, finalized: Set[Msg]): Seq[MsgView] =
+      unfold(mv) { m =>
+        m.parents.filter(x => x.root.sender == mv.root.sender && !finalized(x.root)).toIterator
+      }
+
+    def checkMinMessages(minMsgs: List[MsgView], bondsMap: Map[Sender, Long]): Boolean =
+      minMsgs.size == bondsMap.size
+
+    def calculateNextLayer(minMsgs: List[MsgView]): Map[Sender, MsgView] = {
+      val minMessagesMap = minMsgs.map(x => (x.root.sender, x)).toMap
+      minMsgs
+        .flatMap(_.parents)
+        .filter(x => minMessagesMap.keySet.contains(x.root.sender))
+        .foldLeft(minMessagesMap) { case (acc, m) =>
+          val currMin = acc(m.root.sender)
+          val newMin  =
+            if (m.root.senderSeq > currMin.root.senderSeq) m
+            else currMin
+          acc + ((m.root.sender, newMin))
+        }
+    }
+
+    def calculateWitnessMap(
+        parents: Set[MsgView],
+        nextLayer: Map[Sender, MsgView],
+        finalized: Set[Msg]
+    ): Map[Sender, Map[Sender, Set[Sender]]] =
+      parents.map { mv =>
+        val seenBy = nextLayer
+          .map { case (s, minMsg) =>
+            val seeMinMsg = mv.parents
+              .map { p =>
+                val parentSeen = (p +: selfParents(p, finalized)).exists(_.seen.contains(minMsg.root))
+                (p.root.sender, parentSeen)
+              }
+              .filter(_._2)
+              .toMap
+              .keySet
+            (s, seeMinMsg)
+          }
+        (mv.root.sender, seenBy)
+      }.toMap
+
+    def calculateFringe(
+        witnessMap: Map[Sender, Map[Sender, Set[Sender]]],
+        nextLayer: Map[Sender, MsgView],
+        bondsMap: Map[Sender, Long]
+    ): Option[Set[Msg]] = {
+      // Detect new full fringe
+      // TODO: detect 2/3 of stake supporting partition
+      val partitionMembers = witnessMap.keySet
+      val hasNewFringe     = Seq(
+        // All senders from bonds map form a partition
+        () => partitionMembers.size == bondsMap.size,
+        // All senders witnessing partition
+        () => witnessMap.size == bondsMap.size,
+        // All senders witnessing partition
+        () => witnessMap.values.toSet.size == 1
+      ).forall(_())
+
+      // Use next layer messages if fringe is detected
+      hasNewFringe
+        .guard[Option]
+        .as(
+          nextLayer.mapValues(_.root).values.toSet
+        )
+    }
+
+    /**
+      * Finalization logic
+      *
+      * @param justifications justification seen by the new message
+      * @param bondsMap bonds map seen by the new message
+      * @return fringe from joined justifications and a new detected fringe
+      */
+    def calculateFinalization(
+        justifications: Set[String],
+        bondsMap: Map[Sender, Long]
+    ): (Set[Msg], Option[Set[Msg]]) = {
+      // Parent views for received message
+      val msgParents = justifications.map(dag >>> msgViewMap)
+
+      // Latest fringe seen from parents
+      val parentFringe = msgParents.toList.maxBy(_.fullFringe.head.senderSeq).fullFringe
+
+      val newFringeOpt =
+        for {
+          // Find minimum message from each sender from justifications
+          minMsgs <- msgParents.toList.traverse(selfParents(_, parentFringe).lastOption)
+
+          // Check if min messages satisfy requirements (senders in bonds map)
+          _ <- checkMinMessages(minMsgs, bondsMap).guard[Option]
+
+          // Include ancestors of minimum messages as next layer
+          nextLayer = calculateNextLayer(minMsgs)
+
+          // Create witness map for each justification
+          witnessMap = calculateWitnessMap(msgParents, nextLayer, parentFringe)
+
+          // Calculate partition and resulting finalization fringe
+          fringe <- calculateFringe(witnessMap, nextLayer, bondsMap)
+        } yield fringe
+
+      (parentFringe, newFringeOpt)
+    }
+
+    /**
+      * Add message to sender state, create a message view
+      */
     def addMsg(msg: Msg): (SenderState, MsgView) =
       if (dag.contains(msg.id)) (this, msgViewMap(msg))
       else {
+        // Message justifications
+        val justifications = msg.justifications.values.toSet
+
+        // Calculate next fringe or continue with parent
+        val (parentFringe, newFringeOpt) = calculateFinalization(justifications, msg.bondsMap)
+        val newFullFringe                = newFringeOpt.getOrElse(parentFringe)
+
+        /* Create a message view from a new received message */
+
+        // All seen messages from parents
+        val msgParents    = justifications.map(dag >>> msgViewMap)
+        val seenByParents = msgParents.flatMap(_.seen)
+        val newSeen       = seenByParents + msg
+
+        // Create message view object with all fields calculated
+        val newMsgView = MsgView(root = msg, parents = msgParents, fullFringe = newFullFringe, seen = newSeen)
+
+        // Add message view to a view map
+        val newMsgViewMap = msgViewMap + ((msg, newMsgView))
+
         /* Update sender state from a new received message */
 
         // Find latest message for sender
@@ -98,115 +228,6 @@ object SimpleAlgorithm {
         // Update height map
         val heightSet    = heightMap.getOrElse(msg.height, Set())
         val newHeightMap = heightMap + ((msg.height, heightSet + msg))
-
-        /* Create a message view from a new received message */
-
-        // Update seen messages for message sender
-        def loadMsgViews(m: Msg) =
-          m.justifications.map { case (_, mid) => newDag(mid) }.map(msgViewMap(_)).toSet
-
-        // Parent views for received message
-        val msgParents = loadMsgViews(msg)
-
-        // Latest full fringe seen from parents
-        val parentFullFringe = msgParents.toList.maxBy(_.fullFringe.head.senderSeq).fullFringe
-
-        // All seen messages from parents
-        val seenByParents = msgParents.flatMap(_.seen)
-        val newSeen       = seenByParents + msg
-
-        // Finalized messages in from parents
-        val finalized      = parentFullFringe
-        val finalizedViews = finalized.map(msgViewMap)
-
-        // Iterate self parent messages
-        def selfParents(mv: MsgView) =
-          unfold(mv) { m =>
-            (m.parents.filter(_.root.sender == mv.root.sender) -- finalizedViews).toIterator
-          }
-
-        def checkMinMessages(minMsgs: List[MsgView]) =
-          minMsgs.size == msg.bondsMap.size
-
-        def calculateNextLayer(minMsgs: List[MsgView]) = {
-          val minMessagesMap = minMsgs.map(x => (x.root.sender, x)).toMap
-          minMsgs
-            .flatMap(_.parents)
-            .filter(x => minMessagesMap.keySet.contains(x.root.sender))
-            .foldLeft(minMessagesMap) { case (acc, m) =>
-              val currMin = acc(m.root.sender)
-              val newMin  =
-                if (m.root.senderSeq > currMin.root.senderSeq) m
-                else currMin
-              acc + ((m.root.sender, newMin))
-            }
-        }
-
-        def calculateWitnessMap(parents: Set[MsgView], nextLayer: Map[Sender, MsgView]) =
-          parents.map { mv =>
-            val seenBy = nextLayer
-              .map { case (s, minMsg) =>
-                val seeMinMsg = mv.parents
-                  .map { p =>
-                    val parentSeen = (p +: selfParents(p)).exists(_.seen.contains(minMsg.root))
-                    (p.root.sender, parentSeen)
-                  }
-                  .filter(_._2)
-                  .toMap
-                  .keySet
-                (s, seeMinMsg)
-              }
-            (mv.root.sender, seenBy)
-          }.toMap
-
-        def calculateFringe(witnessMap: Map[Sender, Map[Sender, Set[Sender]]], nextLayer: Map[Sender, MsgView]) = {
-          // Detect new full fringe
-          // TODO: detect 2/3 of stake supporting partition
-          val partitionMembers = witnessMap.keySet
-          val hasNewFringe     = Seq(
-            // All senders from bonds map form a partition
-            () => partitionMembers.size == msg.bondsMap.size,
-            // All senders witnessing partition
-            () => witnessMap.size == msg.bondsMap.size,
-            // All senders witnessing partition
-            () => witnessMap.values.toSet.size == 1
-          ).forall(_())
-
-          // Use next layer messages if fringe is detected
-          hasNewFringe
-            .guard[Option]
-            .as(
-              nextLayer.mapValues(_.root).values.toSet
-            )
-        }
-
-        def finalize(parents: Set[MsgView]) =
-          for {
-            // Find minimum message from each sender from justifications
-            minMsgs <- parents.toList.traverse(selfParents(_).lastOption)
-
-            // Check if min messages satisfy requirements (senders in bonds map)
-            _ <- checkMinMessages(minMsgs).guard[Option]
-
-            // Include ancestors of minimum messages as next layer
-            nextLayer = calculateNextLayer(minMsgs)
-
-            // Create witness map for each justification
-            witnessMap = calculateWitnessMap(parents, nextLayer)
-
-            // Calculate partition and resulting finalization fringe
-            fringe <- calculateFringe(witnessMap, nextLayer)
-          } yield fringe
-
-        // Calculate next fringe or continue with parent
-        val newFringeOpt  = finalize(msgParents)
-        val newFullFringe = newFringeOpt.getOrElse(parentFullFringe)
-
-        // Create message view object with all fields calculated
-        val newMsgView = MsgView(root = msg, parents = msgParents, fullFringe = newFullFringe, seen = newSeen)
-
-        // Add message view to a view map
-        val newMsgViewMap = msgViewMap + ((msg, newMsgView))
 
         // Create new sender state with added message
         val newState = copy(
@@ -236,31 +257,35 @@ object SimpleAlgorithm {
         def debugInfo(parents: Set[MsgView]) =
           for {
             // Find minimum message from each sender from justifications
-            minMsgs <- parents.toList.traverse(selfParents(_).lastOption)
+            minMsgs <- parents.toList.traverse(selfParents(_, parentFringe).lastOption)
 
             // Check if min messages satisfy requirements (senders in bonds map)
-            _ <- checkMinMessages(minMsgs).guard[Option]
+            _ <- checkMinMessages(minMsgs, msg.bondsMap).guard[Option]
 
             // Include ancestors of minimum messages as next layer
             nextLayer = calculateNextLayer(minMsgs)
 
             // Create witness map for each justification
-            witnessMap = calculateWitnessMap(parents, nextLayer)
+            witnessMap = calculateWitnessMap(parents, nextLayer, parentFringe)
 
             // Debug print
+            minMsgsStr    = showMsgsSortSender(minMsgs.map(_.root).toSet)
             nextLayerStr  = showMsgsSortSender(nextLayer.mapValues(_.root).values.toSet)
             witnessMapStr = printWitnessMap(witnessMap)
-          } yield (nextLayerStr, witnessMapStr)
+          } yield (nextLayerStr, witnessMapStr, minMsgsStr)
 
-        val (nextLayerStr, witnessesStr) = debugInfo(msgParents).getOrElse(("-", "-"))
-        val (prefix, fringe)             = newFringeOpt.map(("+", _)).getOrElse((":", parentFullFringe))
-        val fringeStr                    = showMsgsSortSender(fringe)
+        val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(msgParents).getOrElse(("-", "-", "-"))
+        val (prefix, fringe)                         = newFringeOpt.map(("+", _)).getOrElse((":", parentFringe))
+        val fringeStr                                = showMsgsSortSender(fringe)
+        val parentFringeStr                          = showMsgsSortSender(parentFringe)
 
         if (me == msg.sender) {
           println(s"${me.id}: ${msg.id}")
           println(s"WITNESS:\n$witnessesStr")
+          println(s"MIN    : $minMsgsStr")
           println(s"NEXT   : $nextLayerStr")
           println(s"FRINGE $prefix $fringeStr")
+          println(s"PREV_F : $parentFringeStr")
           println(s"---------------------------------")
         }
 
