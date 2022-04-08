@@ -49,7 +49,7 @@ object SimpleAlgorithm {
   case class MsgView(
       root: Msg,
       parents: Set[MsgView],
-      fullFringe: Set[String],
+      fringe: Set[String],
       // Cache of seen message ids
       seen: Set[String]
   ) {
@@ -140,7 +140,7 @@ object SimpleAlgorithm {
     ): (Set[MsgView], Option[Set[MsgView]]) = {
       // Latest fringe seen from justifications
       val parentFringe =
-        justifications.toList.maxBy(_.fullFringe.map(msgViewMap).head.root.senderSeq).fullFringe.map(msgViewMap)
+        justifications.toList.maxBy(_.fringe.map(msgViewMap).head.root.senderSeq).fringe.map(msgViewMap)
 
       val newFringeOpt =
         for {
@@ -187,7 +187,7 @@ object SimpleAlgorithm {
 
         // Create message view object with all fields calculated
         val newMsgView =
-          MsgView(root = msg, parents = justifications, fullFringe = newFullFringe.map(_.root.id), seen = newSeen)
+          MsgView(root = msg, parents = justifications, fringe = newFullFringe.map(_.root.id), seen = newSeen)
 
         /* Update sender state from a new received message */
 
@@ -370,7 +370,7 @@ object SimpleAlgorithm {
       genesisMsg.id -> MsgView(
         root = genesisMsg,
         parents = Set(),
-        fullFringe = Set(genesisMsg.id),
+        fringe = Set(genesisMsg.id),
         seen = Set(genesisMsg.id)
       )
     )
