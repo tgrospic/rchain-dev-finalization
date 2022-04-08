@@ -19,7 +19,7 @@ class R01_LateMsgMismatchSpec extends FlatSpec with Matchers {
   private def regressionTest[F[_]: Sync](runner: NetworkRunner[F]) = {
     import runner._
 
-    val net = genNetwork(senders = 10)
+    val net = genNetwork(senders = 40)
 
     val (n1022813136, n1083092637) = net.split(0.5096376f)
     for {
@@ -74,7 +74,7 @@ class R01_LateMsgMismatchSpec extends FlatSpec with Matchers {
       n995028883                  <- runSections(n1671848291, List((8, 0.77417606f)))
       (n_1269818380, n335670858)   = n_188358953.split(0.08835584f)
       r                           <- runSections(n_1269818380, List((8, 0.07683784f)))
-      _                           <- printDag(r, "regression/R01_LateMsgMismatch")
+//      _                           <- printDag(r, "regression/R01_LateMsgMismatch")
     } yield ()
   }
 }

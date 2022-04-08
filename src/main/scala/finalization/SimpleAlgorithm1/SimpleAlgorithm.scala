@@ -57,9 +57,15 @@ object SimpleAlgorithm {
         m.parents.map(msgViewMap).filter(x => x.sender == mv.sender && !finalized(x)).toIterator
       }
 
+    /**
+      * Checks is minimum messages are enough for next fringe calculation
+      */
     def checkMinMessages(minMsgs: List[MsgView], bondsMap: Map[Sender, Long]): Boolean =
       minMsgs.size == bondsMap.size
 
+    /**
+      * Finds top messages referenced from minimum messages (next message from each sender)
+      */
     def calculateNextLayer(minMsgs: List[MsgView]): Map[Sender, MsgView] = {
       val minMessagesMap = minMsgs.map(x => (x.sender, x)).toMap
       minMsgs
@@ -74,6 +80,9 @@ object SimpleAlgorithm {
         }
     }
 
+    /**
+      * Creates witness map for each justification
+      */
     def calculateWitnessMap(
         parents: Set[MsgView],
         nextLayer: Map[Sender, MsgView],
@@ -152,36 +161,7 @@ object SimpleAlgorithm {
     }
 
     /**
-      * Insert message view to sender's state
-      */
-    def insertMsgView(msgView: MsgView): (SenderState, MsgView) =
-      msgViewMap.get(msgView.id).map((this, _)).getOrElse {
-        // Add message view to a view map
-        val newMsgViewMap = msgViewMap + ((msgView.id, msgView))
-
-        // Find latest message for sender
-        val latest = latestMsgs.get(msgView.sender)
-
-        val latestFromSender = msgView.senderSeq > latest.map(_.senderSeq).getOrElse(-1L)
-        val newLatestMsgs    =
-          if (latestFromSender) latestMsgs + ((msgView.sender, msgView))
-          else latestMsgs
-
-        if (!latestFromSender)
-          println(s"ERROR: add NOT latest message '${msgView.id}' for sender '${me.id}''")
-
-        // Update height map
-        val heightSet    = heightMap.getOrElse(msgView.height, Set())
-        val newHeightMap = heightMap + ((msgView.height, heightSet + msgView))
-
-        // Create new sender state with added message
-        val newState = copy(latestMsgs = newLatestMsgs, heightMap = newHeightMap, msgViewMap = newMsgViewMap)
-
-        (newState, msgView)
-      }
-
-    /**
-      * Create a new message view
+      * Creates a new message, generates id (hash) and finalization fringe
       */
     def createMessageView(
         height: Long,
@@ -210,7 +190,80 @@ object SimpleAlgorithm {
         MsgView(id, height, sender, senderSeq, bondsMap, parents, fringe = newFringeIds, seen = newSeen)
 
       /* Debug log */
+      if (me == sender) {
+//        val fringeStr = newFringeOpt.map(ms => s"+ ${showMsgs(ms)}").getOrElse("")
+//        println(s"${newMsgView.id} $fringeStr")
+        debugLogMessage(newMsgView, parentViews, parentFringe, newFringeOpt)
+      }
+      /* End Debug log */
 
+      newMsgView
+    }
+
+    /**
+      * Creates a new message and adds it to sender state
+      */
+    def createMsgAndUpdateSender(): (SenderState, MsgView) = {
+      val maxHeight      = latestMsgs.map(_._2.height).max
+      val newHeight      = maxHeight + 1
+      val seqNum         = latestMsgs.get(me).map(_.senderSeq).getOrElse(0L)
+      val newSeqNum      = seqNum + 1
+      val justifications = latestMsgs.map { case (_, m) => m.id }.toSet
+      // Bonds map taken from any latest message (assumes no epoch change happen)
+      val bondsMap       = latestMsgs.head._2.bondsMap
+
+      // Create new message
+      val newMsg = createMessageView(
+        height = newHeight,
+        sender = me,
+        senderSeq = newSeqNum,
+        bondsMap,
+        justifications
+      )
+
+      // Insert message view to self state
+      insertMsgView(newMsg)
+    }
+
+    /**
+      * Inserts a message to sender's state
+      */
+    def insertMsgView(msgView: MsgView): (SenderState, MsgView) =
+      msgViewMap.get(msgView.id).map((this, _)).getOrElse {
+        // Add message view to a view map
+        val newMsgViewMap = msgViewMap + ((msgView.id, msgView))
+
+        // Find latest message for sender
+        val latest = latestMsgs.get(msgView.sender)
+
+        // Update latest messages
+        val latestFromSender = msgView.senderSeq > latest.map(_.senderSeq).getOrElse(-1L)
+        val newLatestMsgs    =
+          if (latestFromSender) latestMsgs + ((msgView.sender, msgView))
+          else latestMsgs
+
+        if (!latestFromSender)
+          println(s"ERROR: add NOT latest message '${msgView.id}' for sender '${me.id}''")
+
+        // Update height map
+        val heightSet    = heightMap.getOrElse(msgView.height, Set())
+        val newHeightMap = heightMap + ((msgView.height, heightSet + msgView))
+
+        // Create new sender state with added message
+        val newState = copy(latestMsgs = newLatestMsgs, heightMap = newHeightMap, msgViewMap = newMsgViewMap)
+
+        (newState, msgView)
+      }
+
+    /**
+      * DEBUG: Prints debug output of a message (it has overhead of witness calculation)
+      */
+    def debugLogMessage(
+        msgView: MsgView,
+        parentViews: Set[MsgView],
+        parentFringe: Set[MsgView],
+        newFringeOpt: Option[Set[MsgView]]
+    ): Unit = {
       def printWitnessMap(witnessMap: Map[Sender, Map[Sender, Set[Sender]]]) =
         witnessMap.toList
           .sortBy(_._1.id)
@@ -232,7 +285,7 @@ object SimpleAlgorithm {
           minMsgs <- parents.toList.traverse(selfParents(_, parentFringe).lastOption)
 
           // Check if min messages satisfy requirements (senders in bonds map)
-          _ <- checkMinMessages(minMsgs, bondsMap).guard[Option]
+          _ <- checkMinMessages(minMsgs, msgView.bondsMap).guard[Option]
 
           // Include ancestors of minimum messages as next layer
           nextLayer = calculateNextLayer(minMsgs)
@@ -251,41 +304,13 @@ object SimpleAlgorithm {
       val fringeStr                                = showMsgs(fringe)
       val parentFringeStr                          = showMsgs(parentFringe)
 
-      if (me == sender) {
-        println(s"${me.id}: ${id}")
-        println(s"WITNESS:\n$witnessesStr")
-        println(s"MIN    : $minMsgsStr")
-        println(s"NEXT   : $nextLayerStr")
-        println(s"FRINGE $prefix $fringeStr")
-        println(s"PREV_F : $parentFringeStr")
-        println(s"---------------------------------")
-      }
-
-      /* End Debug log */
-
-      newMsgView
-    }
-
-    def createMsgAndUpdateSender(): (SenderState, MsgView) = {
-      val maxHeight      = latestMsgs.map(_._2.height).max
-      val newHeight      = maxHeight + 1
-      val seqNum         = latestMsgs.get(me).map(_.senderSeq).getOrElse(0L)
-      val newSeqNum      = seqNum + 1
-      val justifications = latestMsgs.map { case (_, m) => m.id }.toSet
-      // Bonds map taken from any latest message (assumes no epoch change happen)
-      val bondsMap       = latestMsgs.head._2.bondsMap
-
-      // Create new message
-      val newMsg = createMessageView(
-        height = newHeight,
-        sender = me,
-        senderSeq = newSeqNum,
-        bondsMap,
-        justifications
-      )
-
-      // Insert message view to self state
-      insertMsgView(newMsg)
+      println(s"${me.id}: ${msgView.id}")
+      println(s"WITNESS:\n$witnessesStr")
+      println(s"MIN    : $minMsgsStr")
+      println(s"NEXT   : $nextLayerStr")
+      println(s"FRINGE $prefix $fringeStr")
+      println(s"PREV_F : $parentFringeStr")
+      println(s"---------------------------------")
     }
   }
 
