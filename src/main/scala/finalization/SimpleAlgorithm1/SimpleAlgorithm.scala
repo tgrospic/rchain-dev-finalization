@@ -13,11 +13,8 @@ import scala.collection.compat.immutable.LazyList
 import scala.collection.immutable.SortedMap
 
 object SimpleAlgorithm {
-  def showMsgs(ms: Set[Msg]) =
-    ms.toSeq.sortBy(x => (x.height, x.id)).map(_.id).mkString(" ")
-
-  def showMsgsSortSender(ms: Set[MsgView]) =
-    ms.toSeq.sortBy(x => (x.root.sender.id, x.root.height, x.root.id)).map(_.root.id).mkString(" ")
+  def showMsgs(ms: Set[MsgView]) =
+    ms.toSeq.sortBy(x => (x.sender.id, x.height, x.id)).map(_.id).mkString(" ")
 
   def unfold[A, S](init: S)(f: S => Iterator[S]) =
     LazyList.unfold(f(init)) { iter =>
@@ -29,64 +26,51 @@ object SimpleAlgorithm {
     }
 
   // Sender represents validator node
-  final case class Sender(id: Int) {
-    override def hashCode(): Int = this.id.hashCode()
-  }
+  final case class Sender(id: Int)
 
-  // Message exchanged between senders (validators)
-  final case class Msg(
+  // M |- root{ parents Final{ finalized } }
+  case class MsgView(
       id: String,
       height: Long,
       sender: Sender,
       senderSeq: Long,
       bondsMap: Map[Sender, Long],
-      justifications: Map[Sender, String]
-  ) {
-    override def hashCode(): Int = this.id.hashCode()
-  }
-
-  // M |- root{ parents Final{ finalized } }
-  case class MsgView(
-      root: Msg,
-      parents: Set[MsgView],
+      parents: Set[String],
       fringe: Set[String],
       // Cache of seen message ids
       seen: Set[String]
   ) {
-    override def hashCode(): Int = this.root.id.hashCode()
+    override def hashCode(): Int = this.id.hashCode()
   }
 
   // SenderState represents state of one validator in the network
   final case class SenderState(
       me: Sender,
-      latestMsgs: Map[Sender, Msg],
-      dag: Map[String, Msg],
-      heightMap: SortedMap[Long, Set[Msg]],
+      latestMsgs: Map[Sender, MsgView],
+      heightMap: SortedMap[Long, Set[MsgView]],
       // Message view - updated when new message is added
       msgViewMap: Map[String, MsgView] = Map()
   ) {
-    override def hashCode(): Int = this.me.id.hashCode()
-
     // Iterate self parent messages
     def selfParents(mv: MsgView, finalized: Set[MsgView]): Seq[MsgView] =
       unfold(mv) { m =>
-        m.parents.filter(x => x.root.sender == mv.root.sender && !finalized(x)).toIterator
+        m.parents.map(msgViewMap).filter(x => x.sender == mv.sender && !finalized(x)).toIterator
       }
 
     def checkMinMessages(minMsgs: List[MsgView], bondsMap: Map[Sender, Long]): Boolean =
       minMsgs.size == bondsMap.size
 
     def calculateNextLayer(minMsgs: List[MsgView]): Map[Sender, MsgView] = {
-      val minMessagesMap = minMsgs.map(x => (x.root.sender, x)).toMap
+      val minMessagesMap = minMsgs.map(x => (x.sender, x)).toMap
       minMsgs
-        .flatMap(_.parents)
-        .filter(x => minMessagesMap.keySet.contains(x.root.sender))
+        .flatMap(_.parents.map(msgViewMap))
+        .filter(x => minMessagesMap.keySet.contains(x.sender))
         .foldLeft(minMessagesMap) { case (acc, m) =>
-          val currMin = acc(m.root.sender)
+          val currMin = acc(m.sender)
           val newMin  =
-            if (m.root.senderSeq > currMin.root.senderSeq) m
+            if (m.senderSeq > currMin.senderSeq) m
             else currMin
-          acc + ((m.root.sender, newMin))
+          acc + ((m.sender, newMin))
         }
     }
 
@@ -99,16 +83,17 @@ object SimpleAlgorithm {
         val seenBy = nextLayer
           .map { case (s, minMsg) =>
             val seeMinMsg = mv.parents
+              .map(msgViewMap)
               .map { p =>
-                val parentSeen = (p +: selfParents(p, finalized)).exists(_.seen.contains(minMsg.root.id))
-                (p.root.sender, parentSeen)
+                val parentSeen = (p +: selfParents(p, finalized)).exists(_.seen.contains(minMsg.id))
+                (p.sender, parentSeen)
               }
               .filter(_._2)
               .toMap
               .keySet
             (s, seeMinMsg)
           }
-        (mv.root.sender, seenBy)
+        (mv.sender, seenBy)
       }.toMap
 
     def calculateFringe(witnessMap: Map[Sender, Map[Sender, Set[Sender]]], bondsMap: Map[Sender, Long]): Boolean = {
@@ -140,7 +125,7 @@ object SimpleAlgorithm {
     ): (Set[MsgView], Option[Set[MsgView]]) = {
       // Latest fringe seen from justifications
       val parentFringe =
-        justifications.toList.maxBy(_.fringe.map(msgViewMap).head.root.senderSeq).fringe.map(msgViewMap)
+        justifications.toList.maxBy(_.fringe.map(msgViewMap).head.senderSeq).fringe.map(msgViewMap)
 
       val newFringeOpt =
         for {
@@ -167,127 +152,131 @@ object SimpleAlgorithm {
     }
 
     /**
-      * Add message to sender state, create a message view
+      * Insert message view to sender's state
       */
-    def addMsg(msg: Msg): (SenderState, MsgView) =
-      if (dag.contains(msg.id)) (this, msgViewMap(msg.id))
-      else {
-        // Message justifications
-        val justifications = msg.justifications.values.toSet.map(msgViewMap)
-
-        // Calculate next fringe or continue with parent
-        val (parentFringe, newFringeOpt) = calculateFinalization(justifications, msg.bondsMap)
-        val newFullFringe                = newFringeOpt.getOrElse(parentFringe)
-
-        /* Create a message view from a new received message */
-
-        // Seen messages are all seen from justifications combined
-        val seenByParents = justifications.flatMap(_.seen)
-        val newSeen       = seenByParents + msg.id
-
-        // Create message view object with all fields calculated
-        val newMsgView =
-          MsgView(root = msg, parents = justifications, fringe = newFullFringe.map(_.root.id), seen = newSeen)
-
-        /* Update sender state from a new received message */
-
+    def insertMsgView(msgView: MsgView): (SenderState, MsgView) =
+      msgViewMap.get(msgView.id).map((this, _)).getOrElse {
         // Add message view to a view map
-        val newMsgViewMap = msgViewMap + ((msg.id, newMsgView))
+        val newMsgViewMap = msgViewMap + ((msgView.id, msgView))
 
         // Find latest message for sender
-        val latest = latestMsgs.get(msg.sender)
+        val latest = latestMsgs.get(msgView.sender)
 
-        // Update latest message if newer
-        val latestFromSender = msg.senderSeq > latest.map(_.senderSeq).getOrElse(-1L)
+        val latestFromSender = msgView.senderSeq > latest.map(_.senderSeq).getOrElse(-1L)
         val newLatestMsgs    =
-          if (latestFromSender) latestMsgs + ((msg.sender, msg))
+          if (latestFromSender) latestMsgs + ((msgView.sender, msgView))
           else latestMsgs
 
         if (!latestFromSender)
-          println(s"ERROR: add NOT latest message '${msg.id}' for sender '${me.id}''")
-
-        // Update DAG
-        val newDag = dag + ((msg.id, msg))
+          println(s"ERROR: add NOT latest message '${msgView.id}' for sender '${me.id}''")
 
         // Update height map
-        val heightSet    = heightMap.getOrElse(msg.height, Set())
-        val newHeightMap = heightMap + ((msg.height, heightSet + msg))
+        val heightSet    = heightMap.getOrElse(msgView.height, Set())
+        val newHeightMap = heightMap + ((msgView.height, heightSet + msgView))
 
         // Create new sender state with added message
-        val newState = copy(
-          latestMsgs = newLatestMsgs,
-          dag = newDag,
-          heightMap = newHeightMap,
-          msgViewMap = newMsgViewMap
-        )
+        val newState = copy(latestMsgs = newLatestMsgs, heightMap = newHeightMap, msgViewMap = newMsgViewMap)
 
-        /* Debug log */
-
-        def printWitnessMap(witnessMap: Map[Sender, Map[Sender, Set[Sender]]]) =
-          witnessMap.toList
-            .sortBy(_._1.id)
-            .map { case (sp, seenByMap) =>
-              val seenMapStr = seenByMap.toList
-                .sortBy(_._1.id)
-                .map { case (s, ss) =>
-                  val ssStr = ss.toList.sortBy(_.id).map(_.id).mkString(", ")
-                  s"${s.id}($ssStr)"
-                }
-                .mkString(" ")
-              s"  ${sp.id}: $seenMapStr"
-            }
-            .mkString("\n")
-
-        def debugInfo(parents: Set[MsgView]) =
-          for {
-            // Find minimum message from each sender from justifications
-            minMsgs <- parents.toList.traverse(selfParents(_, parentFringe).lastOption)
-
-            // Check if min messages satisfy requirements (senders in bonds map)
-            _ <- checkMinMessages(minMsgs, msg.bondsMap).guard[Option]
-
-            // Include ancestors of minimum messages as next layer
-            nextLayer = calculateNextLayer(minMsgs)
-
-            // Create witness map for each justification
-            witnessMap = calculateWitnessMap(parents, nextLayer, parentFringe)
-
-            // Debug print
-            minMsgsStr    = showMsgsSortSender(minMsgs.toSet)
-            nextLayerStr  = showMsgsSortSender(nextLayer.values.toSet)
-            witnessMapStr = printWitnessMap(witnessMap)
-          } yield (nextLayerStr, witnessMapStr, minMsgsStr)
-
-        val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(justifications).getOrElse(("-", "-", "-"))
-        val (prefix, fringe)                         = newFringeOpt.map(("+", _)).getOrElse((":", parentFringe))
-        val fringeStr                                = showMsgsSortSender(fringe)
-        val parentFringeStr                          = showMsgsSortSender(parentFringe)
-
-        if (me == msg.sender) {
-          println(s"${me.id}: ${msg.id}")
-          println(s"WITNESS:\n$witnessesStr")
-          println(s"MIN    : $minMsgsStr")
-          println(s"NEXT   : $nextLayerStr")
-          println(s"FRINGE $prefix $fringeStr")
-          println(s"PREV_F : $parentFringeStr")
-          println(s"---------------------------------")
-        }
-
-        (newState, newMsgView)
+        (newState, msgView)
       }
 
-    def createMsg(): (SenderState, MsgView) = {
+    /**
+      * Create a new message view
+      */
+    def createMessageView(
+        height: Long,
+        sender: Sender,
+        senderSeq: Long,
+        bondsMap: Map[Sender, Long],
+        parents: Set[String]
+    ): MsgView = {
+      // Message justifications
+      val parentViews = parents.map(msgViewMap)
+
+      // Calculate next fringe or continue with parent
+      val (parentFringe, newFringeOpt) = calculateFinalization(parentViews, bondsMap)
+      val newFringe                    = newFringeOpt.getOrElse(parentFringe)
+      val newFringeIds                 = newFringe.map(_.id)
+
+      // Create a message view from a new received message
+      val id = s"${me.id}-$height"
+
+      // Seen messages are all seen from justifications combined
+      val seenByParents = parentViews.flatMap(_.seen)
+      val newSeen       = seenByParents + id
+
+      // Create message view object with all fields calculated
+      val newMsgView =
+        MsgView(id, height, sender, senderSeq, bondsMap, parents, fringe = newFringeIds, seen = newSeen)
+
+      /* Debug log */
+
+      def printWitnessMap(witnessMap: Map[Sender, Map[Sender, Set[Sender]]]) =
+        witnessMap.toList
+          .sortBy(_._1.id)
+          .map { case (sp, seenByMap) =>
+            val seenMapStr = seenByMap.toList
+              .sortBy(_._1.id)
+              .map { case (s, ss) =>
+                val ssStr = ss.toList.sortBy(_.id).map(_.id).mkString(", ")
+                s"${s.id}($ssStr)"
+              }
+              .mkString(" ")
+            s"  ${sp.id}: $seenMapStr"
+          }
+          .mkString("\n")
+
+      def debugInfo(parents: Set[MsgView]) =
+        for {
+          // Find minimum message from each sender from justifications
+          minMsgs <- parents.toList.traverse(selfParents(_, parentFringe).lastOption)
+
+          // Check if min messages satisfy requirements (senders in bonds map)
+          _ <- checkMinMessages(minMsgs, bondsMap).guard[Option]
+
+          // Include ancestors of minimum messages as next layer
+          nextLayer = calculateNextLayer(minMsgs)
+
+          // Create witness map for each justification
+          witnessMap = calculateWitnessMap(parents, nextLayer, parentFringe)
+
+          // Debug print
+          minMsgsStr    = showMsgs(minMsgs.toSet)
+          nextLayerStr  = showMsgs(nextLayer.values.toSet)
+          witnessMapStr = printWitnessMap(witnessMap)
+        } yield (nextLayerStr, witnessMapStr, minMsgsStr)
+
+      val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(parentViews).getOrElse(("-", "-", "-"))
+      val (prefix, fringe)                         = newFringeOpt.map(("+", _)).getOrElse((":", parentFringe))
+      val fringeStr                                = showMsgs(fringe)
+      val parentFringeStr                          = showMsgs(parentFringe)
+
+      if (me == sender) {
+        println(s"${me.id}: ${id}")
+        println(s"WITNESS:\n$witnessesStr")
+        println(s"MIN    : $minMsgsStr")
+        println(s"NEXT   : $nextLayerStr")
+        println(s"FRINGE $prefix $fringeStr")
+        println(s"PREV_F : $parentFringeStr")
+        println(s"---------------------------------")
+      }
+
+      /* End Debug log */
+
+      newMsgView
+    }
+
+    def createMsgAndUpdateSender(): (SenderState, MsgView) = {
       val maxHeight      = latestMsgs.map(_._2.height).max
       val newHeight      = maxHeight + 1
       val seqNum         = latestMsgs.get(me).map(_.senderSeq).getOrElse(0L)
       val newSeqNum      = seqNum + 1
-      val justifications = latestMsgs.map { case (s, m) => (s, m.id) }
+      val justifications = latestMsgs.map { case (_, m) => m.id }.toSet
       // Bonds map taken from any latest message (assumes no epoch change happen)
       val bondsMap       = latestMsgs.head._2.bondsMap
 
       // Create new message
-      val newMsg = Msg(
-        id = s"${me.id}-$newHeight",
+      val newMsg = createMessageView(
         height = newHeight,
         sender = me,
         senderSeq = newSeqNum,
@@ -295,8 +284,8 @@ object SimpleAlgorithm {
         justifications
       )
 
-      // Add message to self state
-      addMsg(newMsg)
+      // Insert message view to self state
+      insertMsgView(newMsg)
     }
   }
 
@@ -329,13 +318,16 @@ object SimpleAlgorithm {
     def >|<(that: SimpleNetwork): SimpleNetwork = {
       val (s1, s2) = (senders, that.senders)
       // Exchange messages
-      val msgs1    = s1.flatMap(_.dag.values)
-      val msgs2    = s2.flatMap(_.dag.values)
+      val msgs1    = s1.toSeq.flatMap(_.msgViewMap.values).toSet
+      val msgs2    = s2.toSeq.flatMap(_.msgViewMap.values).toSet
+
+      val newFor1 = msgs2 -- msgs1
+      val newFor2 = msgs1 -- msgs2
 
       val newSenders1 =
-        s1.map(s => msgs2.toList.sortBy(x => x.height).foldLeft(s)((acc, m) => acc.addMsg(m)._1))
+        s1.map(s => newFor1.toSeq.sortBy(_.height).foldLeft(s)((acc, m) => acc.insertMsgView(m)._1))
       val newSenders2 =
-        s2.map(s => msgs1.toList.sortBy(x => x.height).foldLeft(s)((acc, m) => acc.addMsg(m)._1))
+        s2.map(s => newFor2.toSeq.sortBy(_.height).foldLeft(s)((acc, m) => acc.insertMsgView(m)._1))
 
       SimpleNetwork(newSenders1 ++ newSenders2)
     }
@@ -352,31 +344,34 @@ object SimpleAlgorithm {
     val bondsMap = senders.map((_, 1L)).toMap
 
     // Genesis message created by first sender
-    val sender0    = senders.find(_.id == 0).get
-    val genesisMsg =
-      Msg(s"g", height = 0, sender = sender0, senderSeq = -1, justifications = Map(), bondsMap = bondsMap)
+    val sender0       = senders.find(_.id == 0).get
+    // Genesis message id and height
+    val genesisMsgId  = "g"
+    val genesisHeight = 0L
 
-    // Latest messages from genesis validator
-    val latestMsgs = Map((genesisMsg.sender, genesisMsg))
-
-    // Initial messages in the DAG
-    val dag = Map((genesisMsg.id, genesisMsg))
-
-    // Initial height map including genesis
-    val heightMap = SortedMap(genesisMsg.height -> Set(genesisMsg))
-
-    // Seen state with genesis message
-    val seenMap = Map(
-      genesisMsg.id -> MsgView(
-        root = genesisMsg,
-        parents = Set(),
-        fringe = Set(genesisMsg.id),
-        seen = Set(genesisMsg.id)
-      )
+    // Genesis message view
+    val genesisView = MsgView(
+      genesisMsgId,
+      genesisHeight,
+      sender0,
+      senderSeq = -1,
+      bondsMap = bondsMap,
+      parents = Set(),
+      fringe = Set(genesisMsgId),
+      seen = Set(genesisMsgId)
     )
 
+    // Latest messages from genesis validator
+    val latestMsgs = Map((sender0, genesisView))
+
+    // Initial height map including genesis
+    val heightMap = SortedMap(genesisHeight -> Set(genesisView))
+
+    // Seen message views
+    val seenMsgViewMap = Map((genesisMsgId, genesisView))
+
     val senderStates =
-      senders.map(s => SenderState(me = s, latestMsgs, dag, heightMap, seenMap))
+      senders.map(s => SenderState(me = s, latestMsgs, heightMap, seenMsgViewMap))
 
     SimpleNetwork(senderStates)
   }
@@ -391,21 +386,24 @@ object SimpleAlgorithm {
     */
   def runNetwork[F[_]: Monad](network: SimpleNetwork, genHeight: Int, skipPercentage: Float): F[SimpleNetwork] =
     (genHeight, network).tailRecM { case (round, net) =>
+      // Create messages randomly for each sender
       val newMsgSenders = net.senders.map { ss =>
-        val rnd       = Math.random()
-        val (newS, m) =
-          if (rnd > skipPercentage) ss.createMsg()
-          else (ss, ss.msgViewMap.head._2)
-        (newS, m.root)
+        val rnd = Math.random()
+        if (rnd > skipPercentage) ss.createMsgAndUpdateSender()
+        else (ss, ss.msgViewMap.head._2)
       }
 
+      // Collect all states for senders and messages
       val newSS   = newMsgSenders.map(_._1)
       val newMsgs = newMsgSenders.map(_._2)
 
+      // Insert messages to all senders
+      // - for message creators insert operation is idempotent
       val newSenderStates = newMsgs.foldLeft(newSS) { case (ss, m) =>
-        ss.map(_.addMsg(m)._1)
+        ss.map(_.insertMsgView(m)._1)
       }
 
+      // Update network with new sender states
       val newNet = net.copy(newSenderStates)
 
       val res =
@@ -441,7 +439,7 @@ object SimpleAlgorithm {
       val topo = msgs.map { case (_, v) =>
         v.toVector
           .map { m =>
-            ValidatorBlock(m.id, m.sender.id.toString, m.height, m.justifications.values.toList)
+            ValidatorBlock(m.id, m.sender.id.toString, m.height, m.parents.toList)
           }
       }.toVector
 
