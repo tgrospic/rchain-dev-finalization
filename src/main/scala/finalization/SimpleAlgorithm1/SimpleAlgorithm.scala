@@ -71,7 +71,7 @@ object SimpleAlgorithm {
       dag: Map[String, Msg],
       heightMap: SortedMap[Long, Set[Msg]],
       // Message view - updated when new message is added
-      msgViewMap: Map[Msg, MsgView] = Map()
+      msgViewMap: Map[String, MsgView] = Map()
   ) {
     override def hashCode(): Int = this.me.id.hashCode()
 
@@ -152,19 +152,16 @@ object SimpleAlgorithm {
       * @return fringe from joined justifications and a new detected fringe
       */
     def calculateFinalization(
-        justifications: Set[String],
+        justifications: Set[MsgView],
         bondsMap: Map[Sender, Long]
     ): (Set[Msg], Option[Set[Msg]]) = {
-      // Parent views for received message
-      val msgParents = justifications.map(dag >>> msgViewMap)
-
-      // Latest fringe seen from parents
-      val parentFringe = msgParents.toList.maxBy(_.fullFringe.head.senderSeq).fullFringe
+      // Latest fringe seen from justifications
+      val parentFringe = justifications.toList.maxBy(_.fullFringe.head.senderSeq).fullFringe
 
       val newFringeOpt =
         for {
           // Find minimum message from each sender from justifications
-          minMsgs <- msgParents.toList.traverse(selfParents(_, parentFringe).lastOption)
+          minMsgs <- justifications.toList.traverse(selfParents(_, parentFringe).lastOption)
 
           // Check if min messages satisfy requirements (senders in bonds map)
           _ <- checkMinMessages(minMsgs, bondsMap).guard[Option]
@@ -173,7 +170,7 @@ object SimpleAlgorithm {
           nextLayer = calculateNextLayer(minMsgs)
 
           // Create witness map for each justification
-          witnessMap = calculateWitnessMap(msgParents, nextLayer, parentFringe)
+          witnessMap = calculateWitnessMap(justifications, nextLayer, parentFringe)
 
           // Calculate partition and resulting finalization fringe
           fringe <- calculateFringe(witnessMap, nextLayer, bondsMap)
@@ -186,10 +183,10 @@ object SimpleAlgorithm {
       * Add message to sender state, create a message view
       */
     def addMsg(msg: Msg): (SenderState, MsgView) =
-      if (dag.contains(msg.id)) (this, msgViewMap(msg))
+      if (dag.contains(msg.id)) (this, msgViewMap(msg.id))
       else {
         // Message justifications
-        val justifications = msg.justifications.values.toSet
+        val justifications = msg.justifications.values.toSet.map(msgViewMap)
 
         // Calculate next fringe or continue with parent
         val (parentFringe, newFringeOpt) = calculateFinalization(justifications, msg.bondsMap)
@@ -198,17 +195,16 @@ object SimpleAlgorithm {
         /* Create a message view from a new received message */
 
         // All seen messages from parents
-        val msgParents    = justifications.map(dag >>> msgViewMap)
-        val seenByParents = msgParents.flatMap(_.seen)
+        val seenByParents = justifications.flatMap(_.seen)
         val newSeen       = seenByParents + msg
 
         // Create message view object with all fields calculated
-        val newMsgView = MsgView(root = msg, parents = msgParents, fullFringe = newFullFringe, seen = newSeen)
-
-        // Add message view to a view map
-        val newMsgViewMap = msgViewMap + ((msg, newMsgView))
+        val newMsgView = MsgView(root = msg, parents = justifications, fullFringe = newFullFringe, seen = newSeen)
 
         /* Update sender state from a new received message */
+
+        // Add message view to a view map
+        val newMsgViewMap = msgViewMap + ((msg.id, newMsgView))
 
         // Find latest message for sender
         val latest = latestMsgs.get(msg.sender)
@@ -274,7 +270,7 @@ object SimpleAlgorithm {
             witnessMapStr = printWitnessMap(witnessMap)
           } yield (nextLayerStr, witnessMapStr, minMsgsStr)
 
-        val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(msgParents).getOrElse(("-", "-", "-"))
+        val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(justifications).getOrElse(("-", "-", "-"))
         val (prefix, fringe)                         = newFringeOpt.map(("+", _)).getOrElse((":", parentFringe))
         val fringeStr                                = showMsgsSortSender(fringe)
         val parentFringeStr                          = showMsgsSortSender(parentFringe)
@@ -383,7 +379,7 @@ object SimpleAlgorithm {
 
     // Seen state with genesis message
     val seenMap = Map(
-      genesisMsg -> MsgView(
+      genesisMsg.id -> MsgView(
         root = genesisMsg,
         parents = Set(),
         fullFringe = Set(genesisMsg),
