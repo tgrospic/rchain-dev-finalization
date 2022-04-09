@@ -110,18 +110,17 @@ object SimpleAlgorithm {
         (mv.sender, seenBy)
       }.toMap
 
+    /**
+      * Calculate next finalization fringe based on witness map
+      */
     def calculateFringe(witnessMap: Map[Sender, Map[Sender, Set[Sender]]], bondsMap: Map[Sender, Long]): Boolean = {
-      // Detect new full fringe
-      // TODO: detect 2/3 of stake supporting partition
-      val bondedSenders = bondsMap.keySet
-      val hasNewFringe  = Seq(
-        // All senders from bonds map form a partition
-        () => witnessMap.keySet == bondedSenders,
-        // All senders witnessing partition
-        () => witnessMap.values.forall(_.values.forall(_ == bondedSenders))
-      ).forall(_())
-
-      hasNewFringe
+      // Check requirements to validate the next fringe witnessed by 2/3 of the stake
+      val bondedSenders            = bondsMap.keySet
+      val witnessesOfFullPartition = witnessMap.mapValues(_.values.forall(_ == bondedSenders))
+      val witnessStake             = witnessesOfFullPartition.filter(_._2).keysIterator.map(bondsMap).sum
+      val totalStake               = bondsMap.values.sum
+      // Calculate if 2/3 of witnessed stake supporting next layer
+      witnessStake.toDouble / totalStake > 2d / 3
     }
 
     /**
