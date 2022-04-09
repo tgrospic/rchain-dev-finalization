@@ -108,14 +108,12 @@ object SimpleAlgorithm {
     def calculateFringe(witnessMap: Map[Sender, Map[Sender, Set[Sender]]], bondsMap: Map[Sender, Long]): Boolean = {
       // Detect new full fringe
       // TODO: detect 2/3 of stake supporting partition
-      val partitionMembers = witnessMap.keySet
+      val bondedSenders = bondsMap.keySet
       val hasNewFringe     = Seq(
         // All senders from bonds map form a partition
-        () => partitionMembers.size == bondsMap.size,
+        () => witnessMap.keySet == bondedSenders,
         // All senders witnessing partition
-        () => witnessMap.size == bondsMap.size,
-        // All senders witnessing partition
-        () => witnessMap.values.toSet.size == 1
+        () => witnessMap.values.forall(_.values.forall(_ == bondedSenders))
       ).forall(_())
 
       hasNewFringe
