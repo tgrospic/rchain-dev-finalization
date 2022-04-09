@@ -91,17 +91,22 @@ object SimpleAlgorithm {
       parents.map { mv =>
         val seenBy = nextLayer
           .map { case (s, minMsg) =>
-            val seeMinMsg = mv.parents
+            // Search parents of parent if not part of next layer
+            val parentsOfParent = mv.parents -- nextLayer.values.map(_.id)
+            val seeMinMsg       = parentsOfParent
               .map(msgViewMap)
               .map { p =>
-                val parentSeen = (p +: selfParents(p, finalized)).exists(_.seen.contains(minMsg.id))
-                (p.sender, parentSeen)
+                // Find if next layer message is seen from any parent message
+                val selfMsgs     = p +: selfParents(p, finalized)
+                val seenByParent = selfMsgs.exists(_.seen.contains(minMsg.id))
+                (p.sender, seenByParent)
               }
               .filter(_._2)
               .toMap
               .keySet
             (s, seeMinMsg)
           }
+          .filter(_._2.nonEmpty)
         (mv.sender, seenBy)
       }.toMap
 
@@ -109,7 +114,7 @@ object SimpleAlgorithm {
       // Detect new full fringe
       // TODO: detect 2/3 of stake supporting partition
       val bondedSenders = bondsMap.keySet
-      val hasNewFringe     = Seq(
+      val hasNewFringe  = Seq(
         // All senders from bonds map form a partition
         () => witnessMap.keySet == bondedSenders,
         // All senders witnessing partition
