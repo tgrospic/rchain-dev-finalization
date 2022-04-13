@@ -26,7 +26,9 @@ object SimpleAlgorithm {
     }
 
   // Sender represents validator node
-  final case class Sender(id: Int)
+  final case class Sender(id: Int) {
+    override def hashCode(): Int = this.id.hashCode()
+  }
 
   // M |- root{ parents Final{ finalized } }
   case class MsgView(
@@ -61,6 +63,7 @@ object SimpleAlgorithm {
       * Checks is minimum messages are enough for next fringe calculation
       */
     def checkMinMessages(minMsgs: List[MsgView], bondsMap: Map[Sender, Long]): Boolean =
+      // TODO: add support for epoch changes, simple comparison for senders count is not enough
       minMsgs.size == bondsMap.size
 
     /**
@@ -135,8 +138,12 @@ object SimpleAlgorithm {
         bondsMap: Map[Sender, Long]
     ): (Set[MsgView], Option[Set[MsgView]]) = {
       // Latest fringe seen from justifications
+      // - can be empty which means first layer is first message from each sender
       val parentFringe =
-        justifications.toList.maxBy(_.fringe.map(msgViewMap).head.senderSeq).fringe.map(msgViewMap)
+        justifications.toList
+          .maxBy(_.fringe.map(msgViewMap).headOption.map(_.senderSeq).getOrElse(-1L))
+          .fringe
+          .map(msgViewMap)
 
       val newFringeOpt =
         for {
@@ -301,18 +308,21 @@ object SimpleAlgorithm {
           witnessMapStr = printWitnessMap(witnessMap)
         } yield (nextLayerStr, witnessMapStr, minMsgsStr)
 
-      val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(parentViews).getOrElse(("-", "-", "-"))
+      val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(parentViews).getOrElse(("", "", ""))
       val (prefix, fringe)                         = newFringeOpt.map(("+", _)).getOrElse((":", parentFringe))
       val fringeStr                                = showMsgs(fringe)
       val parentFringeStr                          = showMsgs(parentFringe)
 
-      println(s"${me.id}: ${msgView.id}")
-      println(s"WITNESS:\n$witnessesStr")
-      println(s"MIN    : $minMsgsStr")
-      println(s"NEXT   : $nextLayerStr")
-      println(s"FRINGE $prefix $fringeStr")
-      println(s"PREV_F : $parentFringeStr")
-      println(s"---------------------------------")
+      val printOutputs = Seq(nextLayerStr, witnessesStr, minMsgsStr, fringeStr, parentFringeStr)
+      if (printOutputs.exists(_ != "")) {
+        println(s"${me.id}: ${msgView.id}")
+        println(s"WITNESS:\n$witnessesStr")
+        println(s"MIN    : $minMsgsStr")
+        println(s"NEXT   : $nextLayerStr")
+        println(s"PREV_F : $parentFringeStr")
+        println(s"FRINGE $prefix $fringeStr")
+        println(s"---------------------------------")
+      }
     }
   }
 
@@ -385,6 +395,8 @@ object SimpleAlgorithm {
       bondsMap = bondsMap,
       parents = Set(),
       fringe = Set(genesisMsgId),
+      // Fringe can be empty at start
+//      fringe = Set(),
       seen = Set(genesisMsgId)
     )
 

@@ -155,7 +155,7 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
     val Vector(s1_1, s1_2) = net.split(Seq(3, 2))
 
     for {
-      s1_1_end <- runSections(s1_1, List((1, 0f)))
+      s1_1_end <- runSections(s1_1, List((2, 0f)))
 
       s1_2_end <- runSections(s1_2, List((3, 0f)))
 
@@ -163,17 +163,19 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
 
       Vector(s2_1, s2_2, s2_rest) = net2.split(Seq(2, 1))
 
-      s2_2_end <- runSections(s2_2, List((1, 0f)))
+      s2_2_end <- runSections(s2_2, List((2, 0f)))
 
       net3 = s2_2_end >|< s2_1 >|< s2_rest
 
-      Vector(s3_1, s3_2) = net3.split(Seq(4, 1))
+      net3a <- runSections(net3, List((2, 0f)))
 
-      s3_2_end <- runSections(s3_2, List((1, 0f)))
+      Vector(s3_1, s3_2) = net3a.split(Seq(4, 1))
+
+      s3_2_end <- runSections(s3_2, List((2, 0f)))
       net4      = s3_1 >|< s3_2_end
 
       Vector(s4_1, s4_2, s4_rest) = net4.split(Seq(3, 1))
-      s4_2_end                   <- runSections(s4_2, List((1, 0f)))
+      s4_2_end                   <- runSections(s4_2, List((2, 0f)))
 
       netRes = s4_1 >|< s4_2_end >|< s4_rest
 
