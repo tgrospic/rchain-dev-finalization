@@ -5,7 +5,7 @@ import cats.effect.Sync
 import cats.effect.concurrent.Ref
 import cats.syntax.all._
 import finalization.NetworkManager
-import graphz.GraphGenerator.{dagAsCluster, ValidatorBlock}
+import graphz.GraphGenerator.{ValidatorBlock, dagAsCluster}
 import graphz.{GraphSerializer, ListSerializerRef}
 
 import java.nio.file.Paths
@@ -48,7 +48,7 @@ object SimpleAlgorithm {
   // SenderState represents state of one validator in the network
   final case class SenderState(
       me: Sender,
-      latestMsgs: Map[Sender, MsgView],
+      latestMsgs: Set[MsgView],
       heightMap: SortedMap[Long, Set[MsgView]],
       // Message view - updated when new message is added
       msgViewMap: Map[String, MsgView] = Map()
@@ -213,13 +213,13 @@ object SimpleAlgorithm {
       * Creates a new message and adds it to sender state
       */
     def createMsgAndUpdateSender(): (SenderState, MsgView) = {
-      val maxHeight      = latestMsgs.map(_._2.height).max
+      val maxHeight      = latestMsgs.map(_.height).max
       val newHeight      = maxHeight + 1
-      val seqNum         = latestMsgs.get(me).map(_.senderSeq).getOrElse(0L)
+      val seqNum         = latestMsgs.find(_.sender == me).map(_.senderSeq).getOrElse(0L)
       val newSeqNum      = seqNum + 1
-      val justifications = latestMsgs.map { case (_, m) => m.id }.toSet
+      val justifications = latestMsgs.map(_.id)
       // Bonds map taken from any latest message (assumes no epoch change happen)
-      val bondsMap       = latestMsgs.head._2.bondsMap
+      val bondsMap       = latestMsgs.head.bondsMap
 
       // Create new message
       val newMsg = createMessageView(
@@ -243,12 +243,12 @@ object SimpleAlgorithm {
         val newMsgViewMap = msgViewMap + ((msgView.id, msgView))
 
         // Find latest message for sender
-        val latest = latestMsgs.get(msgView.sender)
+        val latest = latestMsgs.filter(_.sender == msgView.sender)
 
-        // Update latest messages
-        val latestFromSender = msgView.senderSeq > latest.map(_.senderSeq).getOrElse(-1L)
+        // Update latest messages for sender
+        val latestFromSender = msgView.senderSeq > latest.map(_.senderSeq).toList.maximumOption.getOrElse(-1L)
         val newLatestMsgs    =
-          if (latestFromSender) latestMsgs + ((msgView.sender, msgView))
+          if (latestFromSender) latestMsgs -- latest + msgView
           else latestMsgs
 
         if (!latestFromSender)
@@ -401,7 +401,7 @@ object SimpleAlgorithm {
     )
 
     // Latest messages from genesis validator
-    val latestMsgs = Map((sender0, genesisView))
+    val latestMsgs = Set(genesisView)
 
     // Initial height map including genesis
     val heightMap = SortedMap(genesisHeight -> Set(genesisView))
