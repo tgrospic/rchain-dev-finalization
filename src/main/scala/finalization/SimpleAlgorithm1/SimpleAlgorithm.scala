@@ -5,7 +5,7 @@ import cats.effect.Sync
 import cats.effect.concurrent.Ref
 import cats.syntax.all._
 import finalization.NetworkManager
-import graphz.GraphGenerator.{ValidatorBlock, dagAsCluster}
+import graphz.GraphGenerator.{dagAsCluster, ValidatorBlock}
 import graphz.{GraphSerializer, ListSerializerRef}
 
 import java.nio.file.Paths
@@ -60,7 +60,7 @@ object SimpleAlgorithm {
       }
 
     /**
-      * Checks is minimum messages are enough for next fringe calculation
+      * Checks if minimum messages are enough for next fringe calculation
       */
     def checkMinMessages(minMsgs: List[MsgView], bondsMap: Map[Sender, Long]): Boolean =
       // TODO: add support for epoch changes, simple comparison for senders count is not enough
@@ -84,9 +84,9 @@ object SimpleAlgorithm {
     }
 
     /**
-      * Creates witness map for each justification
+      * Creates supported Map (senders see each other on next layer) for next fringe for each justification (sender)
       */
-    def calculateWitnessMap(
+    def calculateNextFringeSupportMap(
         parents: Set[MsgView],
         nextLayer: Map[Sender, MsgView],
         finalized: Set[MsgView]
@@ -114,23 +114,27 @@ object SimpleAlgorithm {
       }.toMap
 
     /**
-      * Calculate next finalization fringe based on witness map
+      * Calculate next finalization fringe based on next fringe supported Map (senders see each other on next layer)
       */
-    def calculateFringe(witnessMap: Map[Sender, Map[Sender, Set[Sender]]], bondsMap: Map[Sender, Long]): Boolean = {
-      // Check requirements to validate the next fringe witnessed by 2/3 of the stake
-      val bondedSenders            = bondsMap.keySet
-      val witnessesOfFullPartition = witnessMap.mapValues(_.values.forall(_ == bondedSenders))
-      val witnessStake             = witnessesOfFullPartition.filter(_._2).keysIterator.map(bondsMap).sum
-      val totalStake               = bondsMap.values.sum
-      // Calculate if 2/3 of witnessed stake supporting next layer
-      witnessStake.toDouble / totalStake > 2d / 3
+    def calculateFringe(
+        nextFringeSupportMap: Map[Sender, Map[Sender, Set[Sender]]],
+        bondsMap: Map[Sender, Long]
+    ): Boolean = {
+      // Calculate stake supporting full partition
+      val bondedSenders      = bondsMap.keySet
+      val seeFullPartition   = nextFringeSupportMap.mapValues(_.values.forall(_ == bondedSenders)).filter(_._2).keys
+      val fullPartitionStake = seeFullPartition.map(bondsMap).sum
+      // Total stake
+      val totalStake         = bondsMap.values.sum
+      // Calculate if 2/3 of stake supporting next layer
+      fullPartitionStake.toDouble / totalStake > 2d / 3
     }
 
     /**
       * Finalization logic
       *
       * @param justifications justification seen by the new message
-      * @param bondsMap bonds map seen by the new message
+      * @param bondsMap bonds map used to validate messages built on parent fringe
       * @return fringe from joined justifications and a new detected fringe
       */
     def calculateFinalization(
@@ -156,11 +160,11 @@ object SimpleAlgorithm {
           // Include ancestors of minimum messages as next layer
           nextLayer = calculateNextLayer(minMsgs)
 
-          // Create witness map for each justification
-          witnessMap = calculateWitnessMap(justifications, nextLayer, parentFringe)
+          // Create next fringe support Map map for each justification (sender)
+          fringeSupportMap = calculateNextFringeSupportMap(justifications, nextLayer, parentFringe)
 
           // Calculate partition and resulting finalization fringe
-          fringeFound = calculateFringe(witnessMap, bondsMap)
+          fringeFound = calculateFringe(fringeSupportMap, bondsMap)
 
           // Use next layer messages if fringe is detected
           fringe <- fringeFound.guard[Option].as(nextLayer.values.toSet)
@@ -194,7 +198,7 @@ object SimpleAlgorithm {
       val seenByParents = parentViews.flatMap(_.seen)
       val newSeen       = seenByParents + id
 
-      // Create message view object with all fields calculated
+      // Create message view, an immutable object with all fields calculated
       val newMsgView =
         MsgView(id, height, sender, senderSeq, bondsMap, parents, fringe = newFringeIds, seen = newSeen)
 
@@ -265,7 +269,7 @@ object SimpleAlgorithm {
       }
 
     /**
-      * DEBUG: Prints debug output of a message (it has overhead of witness calculation)
+      * DEBUG: Prints debug output of a message (it has overhead of fringe support Map calculation)
       */
     def debugLogMessage(
         msgView: MsgView,
@@ -273,8 +277,8 @@ object SimpleAlgorithm {
         parentFringe: Set[MsgView],
         newFringeOpt: Option[Set[MsgView]]
     ): Unit = {
-      def printWitnessMap(witnessMap: Map[Sender, Map[Sender, Set[Sender]]]) =
-        witnessMap.toList
+      def printNextFringeSupportMap(fringeSupportMap: Map[Sender, Map[Sender, Set[Sender]]]) =
+        fringeSupportMap.toList
           .sortBy(_._1.id)
           .map { case (sp, seenByMap) =>
             val seenMapStr = seenByMap.toList
@@ -299,24 +303,24 @@ object SimpleAlgorithm {
           // Include ancestors of minimum messages as next layer
           nextLayer = calculateNextLayer(minMsgs)
 
-          // Create witness map for each justification
-          witnessMap = calculateWitnessMap(parents, nextLayer, parentFringe)
+          // Create next fringe support Map map for each justification (sender)
+          fringeSupportMap = calculateNextFringeSupportMap(parents, nextLayer, parentFringe)
 
           // Debug print
-          minMsgsStr    = showMsgs(minMsgs.toSet)
-          nextLayerStr  = showMsgs(nextLayer.values.toSet)
-          witnessMapStr = printWitnessMap(witnessMap)
-        } yield (nextLayerStr, witnessMapStr, minMsgsStr)
+          minMsgsStr       = showMsgs(minMsgs.toSet)
+          nextLayerStr     = showMsgs(nextLayer.values.toSet)
+          fringeSupportStr = printNextFringeSupportMap(fringeSupportMap)
+        } yield (nextLayerStr, fringeSupportStr, minMsgsStr)
 
-      val (nextLayerStr, witnessesStr, minMsgsStr) = debugInfo(parentViews).getOrElse(("", "", ""))
-      val (prefix, fringe)                         = newFringeOpt.map(("+", _)).getOrElse((":", parentFringe))
-      val fringeStr                                = showMsgs(fringe)
-      val parentFringeStr                          = showMsgs(parentFringe)
+      val (nextLayerStr, fringeSupportStr, minMsgsStr) = debugInfo(parentViews).getOrElse(("", "", ""))
+      val (prefix, fringe)                             = newFringeOpt.map(("+", _)).getOrElse((":", parentFringe))
+      val fringeStr                                    = showMsgs(fringe)
+      val parentFringeStr                              = showMsgs(parentFringe)
 
-      val printOutputs = Seq(nextLayerStr, witnessesStr, minMsgsStr, fringeStr, parentFringeStr)
+      val printOutputs = Seq(nextLayerStr, fringeSupportStr, minMsgsStr, fringeStr, parentFringeStr)
       if (printOutputs.exists(_ != "")) {
         println(s"${me.id}: ${msgView.id}")
-        println(s"WITNESS:\n$witnessesStr")
+        println(s"SUPPORT:\n$fringeSupportStr")
         println(s"MIN    : $minMsgsStr")
         println(s"NEXT   : $nextLayerStr")
         println(s"PREV_F : $parentFringeStr")

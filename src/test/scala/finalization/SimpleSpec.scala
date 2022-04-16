@@ -100,7 +100,7 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
       net2                  = d_s1_1 >|< d_s1_2
       Vector(s2_1, s2_rest) = net2.split(Seq(1))
 
-      // Run 1 witness of 2 partitions
+      // Run 1 seeing 2 partitions
       s2_1_end <- runSections(s2_1, List((1, .0f)))
 
       net3 = s2_1_end >|< s2_rest
