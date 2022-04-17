@@ -10,7 +10,6 @@ import graphz.{GraphSerializer, ListSerializerRef}
 
 import java.nio.file.Paths
 import scala.collection.compat.immutable.LazyList
-import scala.collection.immutable.SortedMap
 
 object SimpleAlgorithm {
   def showMsgs(ms: Set[MsgView]) =
@@ -49,7 +48,6 @@ object SimpleAlgorithm {
   final case class SenderState(
       me: Sender,
       latestMsgs: Set[MsgView],
-      heightMap: SortedMap[Long, Set[MsgView]],
       // Message view - updated when new message is added
       msgViewMap: Map[String, MsgView] = Map()
   ) {
@@ -258,12 +256,8 @@ object SimpleAlgorithm {
         if (!latestFromSender)
           println(s"ERROR: add NOT latest message '${msgView.id}' for sender '${me.id}''")
 
-        // Update height map
-        val heightSet    = heightMap.getOrElse(msgView.height, Set())
-        val newHeightMap = heightMap + ((msgView.height, heightSet + msgView))
-
         // Create new sender state with added message
-        val newState = copy(latestMsgs = newLatestMsgs, heightMap = newHeightMap, msgViewMap = newMsgViewMap)
+        val newState = copy(latestMsgs = newLatestMsgs, msgViewMap = newMsgViewMap)
 
         (newState, msgView)
       }
@@ -407,14 +401,11 @@ object SimpleAlgorithm {
     // Latest messages from genesis validator
     val latestMsgs = Set(genesisView)
 
-    // Initial height map including genesis
-    val heightMap = SortedMap(genesisHeight -> Set(genesisView))
-
     // Seen message views
     val seenMsgViewMap = Map((genesisMsgId, genesisView))
 
     val senderStates =
-      senders.map(s => SenderState(me = s, latestMsgs, heightMap, seenMsgViewMap))
+      senders.map(s => SenderState(me = s, latestMsgs, seenMsgViewMap))
 
     SimpleNetwork(senderStates)
   }
@@ -477,20 +468,15 @@ object SimpleAlgorithm {
     override def merge(net1: SimpleNetwork, net2: SimpleNetwork): SimpleNetwork = net1 >|< net2
 
     override def printDag(network: SimpleNetwork, name: String): F[Unit] = {
-      // DAG toposort
-      val msgs = network.senders.head.heightMap
-      val topo = msgs.map { case (_, v) =>
-        v.toVector
-          .map { m =>
-            ValidatorBlock(m.id, m.sender.id.toString, m.height, m.parents.toList)
-          }
+      val msgs = network.senders.head.msgViewMap.values.toList.map { m =>
+        ValidatorBlock(m.id, m.sender.id.toString, m.height, m.parents.toList)
       }.toVector
 
       for {
         ref <- Ref[F].of(Vector[String]())
         _   <- {
           implicit val ser: GraphSerializer[F] = new ListSerializerRef[F](ref)
-          dagAsCluster[F](topo, "")
+          dagAsCluster[F](msgs, "")
         }
         res <- ref.get
         _    = {

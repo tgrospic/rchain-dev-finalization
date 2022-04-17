@@ -2,7 +2,7 @@ package graphz
 
 import cats.effect.Sync
 import cats.syntax.all._
-import cats.{Applicative, Foldable, Monad}
+import cats.{Applicative, Monad}
 
 object GraphGenerator {
   final case class ValidatorBlock(
@@ -16,21 +16,21 @@ object GraphGenerator {
 
   final case class DagInfo(
       validators: Map[String, ValidatorsBlocks],
-      timeseries: List[Long]
+      timeseries: Set[Long]
   )
 
   object DagInfo {
-    def empty: DagInfo = DagInfo(validators = Map.empty, timeseries = List.empty)
+    def empty: DagInfo = DagInfo(validators = Map.empty, timeseries = Set.empty)
   }
 
   def dagAsCluster[F[_]: Sync: GraphSerializer](
-      topoSort: Vector[Vector[ValidatorBlock]], // Block hash
+      blocks: Vector[ValidatorBlock], // Block hash
       lastFinalizedBlockHash: String
   ): F[Graphz[F]] =
     for {
-      acc <- topoSort.foldM(DagInfo.empty)(accumulateDagInfo[F](_, _))
+      acc <- blocks.foldM(DagInfo.empty)(accumulateDagInfo[F](_, _))
 
-      timeseries             = acc.timeseries.reverse
+      timeseries             = acc.timeseries.toList.sorted
       firstTs                = timeseries.head
       validators             = acc.validators
       validatorsList         = validators.toList.sortBy(_._1)
@@ -75,18 +75,15 @@ object GraphGenerator {
 
   private def accumulateDagInfo[F[_]: Sync](
       acc: DagInfo,
-      blocks: Vector[ValidatorBlock] // Block hash
+      block: ValidatorBlock
   ): F[DagInfo] = {
-    val timeEntry  = blocks.head.height.toLong
-    val validators = blocks.map { b =>
-      val validatorBlocks =
-        Map(timeEntry -> List(b))
-      Map(b.sender -> validatorBlocks)
-    }
+    val timeEntry       = block.height
+    val validatorBlocks =
+      Map(block.sender -> Map(timeEntry -> List(block)))
     acc
       .copy(
-        timeseries = timeEntry :: acc.timeseries,
-        validators = acc.validators |+| Foldable[Vector].fold(validators)
+        timeseries = acc.timeseries + timeEntry,
+        validators = acc.validators |+| validatorBlocks
       )
       .pure[F]
   }
