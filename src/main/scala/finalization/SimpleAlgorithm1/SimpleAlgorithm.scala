@@ -161,14 +161,14 @@ object SimpleAlgorithm {
 
     override def printDag(network: SimpleNetwork, name: String): F[Unit] = {
       val msgs = network.senders.head.msgViewMap.values.toList.map { m =>
-        ValidatorBlock(m.id, m.sender.toString, m.height, m.parents.toList)
+        ValidatorBlock(m.id, m.sender.toString, m.height, m.parents.toList, m.fringe)
       }.toVector
 
       for {
         ref <- Ref[F].of(Vector[String]())
         _   <- {
           implicit val ser: GraphSerializer[F] = new ListSerializerRef[F](ref)
-          dagAsCluster[F](msgs, "")
+          dagAsCluster[F](msgs)
         }
         res <- ref.get
         _    = {
@@ -181,7 +181,8 @@ object SimpleAlgorithm {
           if (!dir.exists()) dir.mkdirs()
 
           // Save graph file
-          //  Files.writeString(Path.of(s"$filePrefix.dot"), graphString)
+//          import java.nio.file._
+//          Files.writeString(Path.of(s"$filePrefix.dot"), graphString)
 
           // Generate dot image
           import java.io.ByteArrayInputStream
