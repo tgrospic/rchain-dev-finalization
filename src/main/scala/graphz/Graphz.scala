@@ -199,7 +199,7 @@ class Graphz[F[_]: Monad](gtype: GraphType, t: String)(implicit ser: GraphSerial
     val attrShape: Map[String, String] =
       if (shape == Graphz.DefaultShape) Map.empty else Map("shape" -> shape.show)
     val attrStyle: Map[String, String] = style.map(s => Map("style" -> s.show)).getOrElse(Map.empty)
-    val attrColor: Map[String, String] = color.map(c => Map("color" -> c)).getOrElse(Map.empty)
+    val attrColor: Map[String, String] = color.map(c => Map("color" -> s""""$c"""")).getOrElse(Map.empty)
     val attrLabel: Map[String, String] = label.map(c => Map("label" -> c)).getOrElse(Map.empty)
 
     val attrs: Map[String, String] = attrShape |+| attrColor |+| attrLabel |+| attrStyle
