@@ -47,7 +47,7 @@ class SimpleSpec extends FlatSpec with PropertyChecks with Matchers {
 
     val net = genNetwork(senders = 5)
     for {
-      net1 <- runSections(net, List((6, .0f)))
+      net1 <- runSections(net, List((10, .0f)))
 
       _ <- printDag(net1, "complete")
     } yield ()

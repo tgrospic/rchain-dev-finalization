@@ -84,9 +84,9 @@ object SimpleAlgorithm {
       senderSeq = -1,
       bondsMap = bondsMap,
       parents = Set(),
-      fringe = Set(genesisMsgId),
       // Fringe can be empty at start
-//      fringe = Set(),
+      fringe = Set(),
+      // fringe = Set(genesisMsgId),
       seen = Set(genesisMsgId)
     )
 
