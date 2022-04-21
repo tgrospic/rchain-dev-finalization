@@ -13,7 +13,9 @@ object GraphGenerator {
       height: Long,
       justifications: List[String],
       fringe: Set[String]
-  )
+  ) {
+    override def hashCode(): Int = id.hashCode()
+  }
 
   type ValidatorsBlocks = Map[Long, List[ValidatorBlock]]
 
@@ -171,25 +173,32 @@ object GraphGenerator {
     // Different color for each fringe
     val colors        = LazyList(
       "#fdff7a", // yellow
-      "#b6ff7a", // light green
-      "#7affff", // light blue
       "#8f82ff", // purple
-      "#fd82ff", // pink
-      "#ff829b"  // red
+      "#b6ff7a", // light green
+      "#ff829b", // red
+      "#7affff", // light blue
+      "#fd82ff"  // pink
       // dark colors
       // "#252dfa", // blue
       // "#19d900", // green
-      // "#ababab"  // gray
+      // "#ababab",  // gray
     )
     val colorsInCycle = cycle(colors)
 
-    // Collect all fringes, remove duplicates
-    // TODO: sort fringes by height to prevent the same neighbour color
-    val fringes = blocks.foldLeft(Set[Set[String]]()) { case (acc, b) => acc + b.fringe }
+    val blockMap = blocks.foldLeft(Map[String, ValidatorBlock]()) { case (acc, b) =>
+      acc + ((b.id, b))
+    }
+
+    // Collect all fringes, remove duplicates and sort
+    val fringes = blocks
+      .foldLeft(Set[Set[ValidatorBlock]]()) { case (acc, b) => acc + b.fringe.map(blockMap) }
+      .filter(_.nonEmpty)
+      .toList
+      .sortBy(_.toList.map(_.height).maximumOption.getOrElse(-1L))
 
     // Zip fringes with colors
-    fringes.zip(colorsInCycle).foldLeft(Map[String, String]()) { case (acc, (ids, color)) =>
-      ids.foldLeft(acc) { case (acc1, id) => acc1 + ((id, color)) }
+    fringes.zip(colorsInCycle).foldLeft(Map[String, String]()) { case (acc, (bs, color)) =>
+      bs.foldLeft(acc) { case (acc1, b) => acc1 + ((b.id, color)) }
     }
   }
 
@@ -221,9 +230,5 @@ object GraphGenerator {
   private def transformOnHeight[A](height: Long, blocks: ValidatorsBlocks)(
       f: String => A
   ): Option[Map[String, A]] =
-    blocks
-      .get(height)
-      .map { tsBlocks =>
-        tsBlocks.map { case ValidatorBlock(id, _, _, _, _) => id -> f(id) }.toMap
-      }
+    blocks.get(height).map(_.map(v => v.id -> f(v.id)).toMap)
 }
