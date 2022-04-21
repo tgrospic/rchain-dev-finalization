@@ -145,7 +145,7 @@ final case class Finalizer[M, S](msgViewMap: Map[M, Message[M, S]]) {
     // - can be empty which means first layer is first message from each sender
     val parentFringe =
       justifications.toList
-        .maxBy(_.fringe.map(msgViewMap).headOption.map(_.senderSeq).getOrElse(-1L))
+        .maxBy(_.fringe.map(msgViewMap).toList.map(_.height).maximumOption.getOrElse(-1L))
         .fringe
         .map(msgViewMap)
 
