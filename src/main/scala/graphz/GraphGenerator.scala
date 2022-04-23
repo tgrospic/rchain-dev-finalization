@@ -97,11 +97,11 @@ object GraphGenerator {
       _    <- nodes.traverse(ns =>
                 ns.toList.traverse { case (name, (style, fill, border)) =>
                   // Node shape, style and color
-                  val borderWidth     = border >> 3.some
-                  val borderOrDefault = border orElse "#828282".some
+                  val borderWidth     = border >> 2.some
+                  val borderOrDefault = border orElse "#828282".some // or gray
                   g.node(
                     name,
-                    shape = Circle,
+                    shape = DoubleOctagon,
                     style = style,
                     color = fill,
                     border = borderOrDefault,
@@ -120,7 +120,7 @@ object GraphGenerator {
     } yield g
 
   private def initGraph[G[_]: Monad: GraphSerializer](name: String): G[Graphz[G]] = {
-    val fontSize = "10"
+    val fontSize = "12"
     Graphz[G](
       name,
       DiGraph,
@@ -179,10 +179,10 @@ object GraphGenerator {
       "#ff5e5e", // red
       "#b561ff", // purple
       "#00b803", // green
-      "#6e8dff", // blue
+      "#636eff", // blue
       "#8dff87", // light green
-      "#5efaff", // cyan
-      "#ffe11c"  // yellow
+      "#00d9ff", // light blue
+      "#ffc400"  // yellow
     )
     val colorsInCycle = cycle(colors)
 

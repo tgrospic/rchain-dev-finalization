@@ -18,12 +18,13 @@ final case object Graph   extends GraphType
 final case object DiGraph extends GraphType
 
 sealed trait GraphShape
-final case object Circle       extends GraphShape
-final case object DoubleCircle extends GraphShape
-final case object Box          extends GraphShape
-final case object PlainText    extends GraphShape
-final case object Msquare      extends GraphShape
-final case object Record       extends GraphShape
+final case object Circle        extends GraphShape
+final case object DoubleCircle  extends GraphShape
+final case object DoubleOctagon extends GraphShape
+final case object Box           extends GraphShape
+final case object PlainText     extends GraphShape
+final case object Msquare       extends GraphShape
+final case object Record        extends GraphShape
 
 sealed trait GraphRank
 final case object Same   extends GraphRank
@@ -55,12 +56,13 @@ object Graphz {
 
   implicit val showShape: Show[GraphShape] = new Show[GraphShape] {
     def show(shape: GraphShape): String = shape match {
-      case Circle       => "circle"
-      case DoubleCircle => "doublecircle"
-      case Box          => "box"
-      case PlainText    => "plaintext"
-      case Msquare      => "Msquare"
-      case Record       => "record"
+      case Circle        => "circle"
+      case DoubleCircle  => "doublecircle"
+      case DoubleOctagon => "doubleoctagon"
+      case Box           => "box"
+      case PlainText     => "plaintext"
+      case Msquare       => "Msquare"
+      case Record        => "record"
     }
   }
 
