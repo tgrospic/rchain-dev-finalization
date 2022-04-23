@@ -79,7 +79,7 @@ object Graphz {
     }
   }
 
-  def DefaultShape = Circle
+  val DefaultShape = Circle
 
   def apply[F[_]: Monad](
       name: String,
@@ -193,16 +193,21 @@ class Graphz[F[_]: Monad](gtype: GraphType, t: String)(implicit ser: GraphSerial
       shape: GraphShape = Circle,
       style: Option[GraphStyle] = None,
       color: Option[String] = None,
+      border: Option[String] = None,
+      borderWidth: Option[Int] = None,
       label: Option[String] = None
   ): F[Unit] = {
     import Graphz.{showShape, showStyle}
-    val attrShape: Map[String, String] =
+    val attrShape: Map[String, String]       =
       if (shape == Graphz.DefaultShape) Map.empty else Map("shape" -> shape.show)
-    val attrStyle: Map[String, String] = style.map(s => Map("style" -> s.show)).getOrElse(Map.empty)
-    val attrColor: Map[String, String] = color.map(c => Map("color" -> s""""$c"""")).getOrElse(Map.empty)
-    val attrLabel: Map[String, String] = label.map(c => Map("label" -> c)).getOrElse(Map.empty)
+    val attrStyle: Map[String, String]       = style.map(s => Map("style" -> s.show)).getOrElse(Map.empty)
+    val attrColor: Map[String, String]       = color.map(c => Map("fillcolor" -> s""""$c"""")).getOrElse(Map.empty)
+    val attrBorder: Map[String, String]      = border.map(c => Map("color" -> s""""$c"""")).getOrElse(Map.empty)
+    val attrBorderWidth: Map[String, String] = borderWidth.map(w => Map("penwidth" -> s"$w")).getOrElse(Map.empty)
+    val attrLabel: Map[String, String]       = label.map(c => Map("label" -> c)).getOrElse(Map.empty)
 
-    val attrs: Map[String, String] = attrShape |+| attrColor |+| attrLabel |+| attrStyle
+    val attrs: Map[String, String] =
+      attrShape |+| attrColor |+| attrBorder |+| attrBorderWidth |+| attrLabel |+| attrStyle
     ser.push(t + Graphz.quote(name) + Graphz.attrMkStr(attrs).map(a => " " + a).getOrElse(""))
   }
 

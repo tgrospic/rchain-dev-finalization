@@ -44,12 +44,6 @@ object GraphGenerator {
                        .distinct
                        .sorted
 
-      // draw ancestors first
-      _           <- allAncestors.traverse { ancestor =>
-                       val (style, color) = styleForNode(ancestor, blockColorMap)
-                       g.node(ancestor, shape = Box, style = style, color = color)
-                     }
-
       // create invisible edges from ancestors to first node in each cluster for proper alignment
       _           <- validatorsList.traverse { case (valId, blocks) =>
                        allAncestors.traverse { ancestor =>
@@ -95,15 +89,24 @@ object GraphGenerator {
       validatorId: String,
       blocks: ValidatorsBlocks,
       timeseries: List[Long],
-      blockColorMap: Map[String, String]
+      blockColorMap: Map[String, (Option[String], Option[String])]
   ): G[Graphz[G]] =
     for {
       g    <- Graphz.subgraph[G](s"cluster_$validatorId", DiGraph, label = Some(validatorId))
       nodes = timeseries.map(ts => nodesForHeight(ts, blocks, validatorId, blockColorMap))
       _    <- nodes.traverse(ns =>
-                ns.toList.traverse { case (name, (style, color)) =>
+                ns.toList.traverse { case (name, (style, fill, border)) =>
                   // Node shape, style and color
-                  g.node(name, shape = Box, style = style, color = color)
+                  val borderWidth     = border >> 3.some
+                  val borderOrDefault = border orElse "#828282".some
+                  g.node(
+                    name,
+                    shape = Circle,
+                    style = style,
+                    color = fill,
+                    border = borderOrDefault,
+                    borderWidth = borderWidth
+                  )
                 }
               )
       _    <- nodes.zip(nodes.drop(1)).traverse { case (n1s, n2s) =>
@@ -111,7 +114,6 @@ object GraphGenerator {
                   n2s.keys.toList.traverse { n2 =>
                     g.edge(n1, n2, style = Some(Invis))
                   }
-
                 }
               }
       _    <- g.close
@@ -169,19 +171,18 @@ object GraphGenerator {
 
   /* Helper functions to generate block color mapping from fringes */
 
-  private def generateFringeColorMapping(blocks: Vector[ValidatorBlock]): Map[String, String] = {
+  private def generateFringeColorMapping(
+      blocks: Vector[ValidatorBlock]
+  ): Map[String, (Option[String], Option[String])] = {
     // Different color for each fringe
     val colors        = LazyList(
-      "#fdff7a", // yellow
-      "#8f82ff", // purple
-      "#b6ff7a", // light green
-      "#ff829b", // red
-      "#7affff", // light blue
-      "#fd82ff"  // pink
-      // dark colors
-      // "#252dfa", // blue
-      // "#19d900", // green
-      // "#ababab",  // gray
+      "#ff5e5e", // red
+      "#b561ff", // purple
+      "#00b803", // green
+      "#6e8dff", // blue
+      "#8dff87", // light green
+      "#5efaff", // cyan
+      "#ffe11c"  // yellow
     )
     val colorsInCycle = cycle(colors)
 
@@ -190,16 +191,27 @@ object GraphGenerator {
     }
 
     // Collect all fringes, remove duplicates and sort
-    val fringes = blocks
-      .foldLeft(Set[Set[ValidatorBlock]]()) { case (acc, b) => acc + b.fringe.map(blockMap) }
-      .filter(_.nonEmpty)
+    val initFringeMap = Map[Set[ValidatorBlock], Set[ValidatorBlock]]()
+    val fringes       = blocks
+      .foldLeft(initFringeMap) { case (acc, b) =>
+        val fringe     = b.fringe.map(blockMap)
+        val seenFringe = acc.getOrElse(fringe, Set())
+        acc + ((fringe, seenFringe + b))
+      }
+      .filter(_._1.nonEmpty)
       .toList
-      .sortBy(_.toList.map(_.height).maximumOption.getOrElse(-1L))
+      .sortBy(_._1.toList.map(_.height).maximumOption.getOrElse(-1L))
 
     // Zip fringes with colors
-    fringes.zip(colorsInCycle).foldLeft(Map[String, String]()) { case (acc, (bs, color)) =>
-      bs.foldLeft(acc) { case (acc1, b) => acc1 + ((b.id, color)) }
-    }
+    val initColorMaps        = (Map[String, String](), Map[String, String]())
+    val (fillMap, borderMap) =
+      fringes.zip(colorsInCycle).foldLeft(initColorMaps) { case ((cAcc, bAcc), ((cs, bs), color)) =>
+        val newCs = cs.foldLeft(cAcc) { case (acc1, b) => acc1 + ((b.id, color)) }
+        val newBs = bs.foldLeft(bAcc) { case (acc1, b) => acc1 + ((b.id, color)) }
+        (newCs, newBs)
+      }
+    val keys                 = fillMap.keySet ++ borderMap.keySet
+    keys.map(x => x -> (fillMap.get(x), borderMap.get(x))).toMap
   }
 
   private def cycle(xs: LazyList[String]): LazyList[String] = xs #::: cycle(xs)
@@ -211,20 +223,29 @@ object GraphGenerator {
       height: Long,
       blocks: ValidatorsBlocks,
       validatorId: String,
-      blockColorMap: Map[String, String]
-  ): Map[String, (Option[GraphStyle], Option[String])] =
+      blockColorMap: Map[String, (Option[String], Option[String])]
+  ): Map[String, (Option[GraphStyle], Option[String], Option[String])] =
     transformOnHeight(height, blocks)(styleForNode(_, blockColorMap)).getOrElse(heightNoBlocks(height, validatorId))
 
   // Node style for a block
-  private def styleForNode(blockId: String, blockColorMap: Map[String, String]): (Option[Filled.type], Option[String]) =
+  private def styleForNode(
+      blockId: String,
+      blockColorMap: Map[String, (Option[String], Option[String])]
+  ): (Option[Filled.type], Option[String], Option[String]) =
     blockColorMap
       .get(blockId)
-      .map(color => (Filled.some, color.some))
-      .getOrElse((none, none))
+      .map { case (fill, border) =>
+        val style = fill.map(_ => Filled)
+        (style, fill, border)
+      }
+      .getOrElse((none, none, none))
 
   // Node style on height without blocks
-  private def heightNoBlocks(ts: Long, validatorId: String): Map[String, (Option[Invis.type], Option[String])] =
-    Map(s"${ts.show}_$validatorId" -> (Some(Invis), none))
+  private def heightNoBlocks(
+      ts: Long,
+      validatorId: String
+  ): Map[String, (Option[Invis.type], Option[String], Option[String])] =
+    Map(s"${ts.show}_$validatorId" -> (Some(Invis), none, none))
 
   // Transforms blocks on height
   private def transformOnHeight[A](height: Long, blocks: ValidatorsBlocks)(
