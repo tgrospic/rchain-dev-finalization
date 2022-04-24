@@ -58,7 +58,7 @@ class RandomSpec extends FlatSpec with Matchers {
 
       _ <- printDag(net6, s"random/dag-3")
 
-      net7 <- runSections(net6, List((5, .0f)))
+      net7 <- runSections(net6, List((8, .0f)))
 
       _ <- printDag(net7, s"random/dag-4")
     } yield ()

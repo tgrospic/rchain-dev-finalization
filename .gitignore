@@ -4,4 +4,8 @@ target/
 .metals
 .vscode
 .idea
-vdags
+vdags/*
+!vdags/random/
+!vdags/random-lazy/
+!vdags/complete*
+!vdags/partitions-merge*
