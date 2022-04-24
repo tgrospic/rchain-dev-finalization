@@ -2,6 +2,8 @@ package finalization.SimpleAlgorithm1
 
 import cats.syntax.all._
 
+import scala.collection.compat.immutable.LazyList
+
 // FinalizerState represents state of one validator in the network
 final case class FinalizerState[M: Ordering, S: Ordering](
     me: S,
@@ -15,7 +17,6 @@ final case class FinalizerState[M: Ordering, S: Ordering](
     * Creates a new message, generates id (hash) and finalization fringe
     */
   def createMessageView(
-      finalizer: Finalizer[M, S],
       height: Long,
       sender: S,
       senderSeq: Long,
@@ -26,9 +27,11 @@ final case class FinalizerState[M: Ordering, S: Ordering](
     val parentViews = parents.map(msgViewMap)
 
     // Calculate next fringe or continue with parent
+    val finalizer                    = Finalizer(msgViewMap)
     val (parentFringe, newFringeOpt) = finalizer.calculateFinalization(parentViews, bondsMap)
-    val newFringe                    = newFringeOpt.getOrElse(parentFringe)
-    val newFringeIds                 = newFringe.map(_.id)
+
+    val newFringe    = newFringeOpt.getOrElse(parentFringe)
+    val newFringeIds = newFringe.map(_.id)
 
     // Create a message view from a new received message
     val id = genMsgId(me, height) // s"$me-$height"
@@ -90,11 +93,8 @@ final case class FinalizerState[M: Ordering, S: Ordering](
     // Bonds map taken from any latest message (assumes no epoch change happen)
     val bondsMap       = latestMsgs.head.bondsMap
 
-    val finalizer = Finalizer(msgViewMap)
-
     // Create new message
     val newMsg = createMessageView(
-      finalizer,
       height = newHeight,
       sender = me,
       senderSeq = newSeqNum,
