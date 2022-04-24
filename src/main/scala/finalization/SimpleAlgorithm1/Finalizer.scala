@@ -141,18 +141,11 @@ final case class Finalizer[M, S](msgViewMap: Map[M, Message[M, S]]) {
       justifications: Set[Message[M, S]],
       bondsMap: Map[S, Long]
   ): (Set[Message[M, S]], Option[Set[Message[M, S]]]) = {
-    // Latest fringe seen from justifications
-    // - can be empty which means first layer is first message from each sender
-    val parentFringe =
-      justifications.toList
-        .maxBy(_.fringe.map(msgViewMap).toList.map(_.height).maximumOption.getOrElse(-1L))
-        .fringe
-        .map(msgViewMap)
-
-    val newFringeOpt =
+    // Calculate next fringe from previous fringe
+    def nextFringe(prevFringe: Set[Message[M, S]]): Option[Set[Message[M, S]]] =
       for {
         // Find minimum message from each sender from justifications
-        minMsgs <- justifications.toList.traverse(selfParents(_, parentFringe).lastOption)
+        minMsgs <- justifications.toList.traverse(selfParents(_, prevFringe).lastOption)
 
         // Check if min messages satisfy requirements (senders in bonds map)
         _ <- checkMinMessages(minMsgs, bondsMap).guard[Option]
@@ -161,7 +154,7 @@ final case class Finalizer[M, S](msgViewMap: Map[M, Message[M, S]]) {
         nextLayer = calculateNextLayer(minMsgs)
 
         // Create next fringe support Map map for each justification (sender)
-        fringeSupportMap = calculateNextFringeSupportMap(justifications, nextLayer, parentFringe)
+        fringeSupportMap = calculateNextFringeSupportMap(justifications, nextLayer, prevFringe)
 
         // Calculate partition and resulting finalization fringe
         fringeFound = calculateFringe(fringeSupportMap, bondsMap)
@@ -169,6 +162,18 @@ final case class Finalizer[M, S](msgViewMap: Map[M, Message[M, S]]) {
         // Use next layer messages if fringe is detected
         fringe <- fringeFound.guard[Option].as(nextLayer.values.toSet)
       } yield fringe
+
+    // Latest fringe seen from justifications
+    // - can be empty which means first layer is first message from each sender
+    val parentFringe =
+      justifications.toList
+        .maxBy(_.fringe.map(msgViewMap).toList.map(_.height).maximumOption.getOrElse(-1L))
+        .fringe
+        .map(msgViewMap)
+
+    // Find top most fringe
+    // - multiple fringes can be finalized at once
+    val newFringeOpt = LazyList.unfold(parentFringe)(nextFringe(_).map(nf => (nf, nf))).lastOption
 
     (parentFringe, newFringeOpt)
   }
